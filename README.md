@@ -1,4 +1,5 @@
-# historical_city_model
+# historical_city_model (WIP)
+** very much work in progress, not ready :D**
 Set of scripts and other guide / utilities to generate a historical city model (or ingredients for it) from various geodata.
 
 Also contains a simple legacy compatible viewer for the historical city model.
