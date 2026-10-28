@@ -1,0 +1,13 @@
+# depslib dependency file v1.0
+1793225642 source:e:\github\historical_city_model\historyviewer\main.cpp
+	<windows.h>
+	<GL/gl.h>
+	<algorithm>
+	<cmath>
+	<cstdio>
+	<fstream>
+	<sstream>
+	<string>
+	<vector>
+	<cstring>
+
