@@ -1,0 +1,35 @@
+{
+  "id": "birch_02",
+  "species": "birch",
+  "plant_height_metres": 25.467,
+  "card_height_metres": 27.235,
+  "card_width_metres": 10.106,
+  "pivot_uv": [
+    0.5,
+    0.02
+  ],
+  "alpha_cutoff": 0.5,
+  "double_sided": true,
+  "lods": [
+    {
+      "name": "near",
+      "representation": "crossed_cards",
+      "front": "near_front.png",
+      "side": "near_side.png",
+      "suggested_max_distance_metres": 60
+    },
+    {
+      "name": "medium",
+      "representation": "crossed_cards",
+      "front": "medium_front.png",
+      "side": "medium_side.png",
+      "suggested_max_distance_metres": 150
+    },
+    {
+      "name": "far",
+      "representation": "axial_billboard",
+      "front": "far.png",
+      "suggested_max_distance_metres": 300
+    }
+  ]
+}

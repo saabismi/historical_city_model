@@ -1,0 +1,35 @@
+{
+  "id": "pine_01",
+  "species": "pine",
+  "plant_height_metres": 30.403,
+  "card_height_metres": 32.344,
+  "card_width_metres": 11.266,
+  "pivot_uv": [
+    0.5,
+    0.02
+  ],
+  "alpha_cutoff": 0.5,
+  "double_sided": true,
+  "lods": [
+    {
+      "name": "near",
+      "representation": "crossed_cards",
+      "front": "near_front.png",
+      "side": "near_side.png",
+      "suggested_max_distance_metres": 60
+    },
+    {
+      "name": "medium",
+      "representation": "crossed_cards",
+      "front": "medium_front.png",
+      "side": "medium_side.png",
+      "suggested_max_distance_metres": 150
+    },
+    {
+      "name": "far",
+      "representation": "axial_billboard",
+      "front": "far.png",
+      "suggested_max_distance_metres": 300
+    }
+  ]
+}

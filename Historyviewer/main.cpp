@@ -22,7 +22,7 @@
 using namespace std;
 
 // Config for setting the terrain files' location (folder with terrain_index.txt and "tiles" folder which has .trn files)
-const string tilesLocation = "2008_terrain_waterfixed";
+const string tilesLocation = "2008_terrain_water";
 
 // ===========================================================================
 // Math helpers

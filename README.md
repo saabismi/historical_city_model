@@ -25,6 +25,7 @@ install dependencies:
 pip install requests
 pip install "laspy[lazrs]" numpy scipy rasterio trimesh pyproj
 pip install fiona if something doesn't work.
+pip install numpy scipy rasterio "laspy[lazrs]" "shapely>=2.0" (for the vegetation generator)
 
 ## Todo
 - integrate geo sam pipeline for making training data for a visual model
@@ -52,3 +53,8 @@ to "link libraries" add "gdi32" "user32" and "opengl32" if they are not present 
 go to project -> set programs' arguments in e.g. debug target, enter the location where the terrain_index.txt and the lightweight optimized tiles subfolder are located inside. e.g. "E:\Github\historical_city_model\espoo1965_clouds\terrain_test"
 
 after that, you should be able to build and run the program!
+
+## textures for vegetation
+for making textures and vegetation we need to install
+pip install pillow numpy
+

@@ -1,0 +1,99 @@
+{
+  "format": "procedural_vegetation_library_v1",
+  "season": "summer",
+  "seed": 12345,
+  "assets": [
+    {
+      "id": "birch_01",
+      "definition": "birch_01/asset.json"
+    },
+    {
+      "id": "birch_02",
+      "definition": "birch_02/asset.json"
+    },
+    {
+      "id": "birch_03",
+      "definition": "birch_03/asset.json"
+    },
+    {
+      "id": "aspen_01",
+      "definition": "aspen_01/asset.json"
+    },
+    {
+      "id": "aspen_02",
+      "definition": "aspen_02/asset.json"
+    },
+    {
+      "id": "aspen_03",
+      "definition": "aspen_03/asset.json"
+    },
+    {
+      "id": "alder_01",
+      "definition": "alder_01/asset.json"
+    },
+    {
+      "id": "alder_02",
+      "definition": "alder_02/asset.json"
+    },
+    {
+      "id": "alder_03",
+      "definition": "alder_03/asset.json"
+    },
+    {
+      "id": "pine_01",
+      "definition": "pine_01/asset.json"
+    },
+    {
+      "id": "pine_02",
+      "definition": "pine_02/asset.json"
+    },
+    {
+      "id": "pine_03",
+      "definition": "pine_03/asset.json"
+    },
+    {
+      "id": "spruce_01",
+      "definition": "spruce_01/asset.json"
+    },
+    {
+      "id": "spruce_02",
+      "definition": "spruce_02/asset.json"
+    },
+    {
+      "id": "spruce_03",
+      "definition": "spruce_03/asset.json"
+    },
+    {
+      "id": "willow_shrub_01",
+      "definition": "willow_shrub_01/asset.json"
+    },
+    {
+      "id": "willow_shrub_02",
+      "definition": "willow_shrub_02/asset.json"
+    },
+    {
+      "id": "willow_shrub_03",
+      "definition": "willow_shrub_03/asset.json"
+    },
+    {
+      "id": "leafy_shrub_01",
+      "definition": "leafy_shrub_01/asset.json"
+    },
+    {
+      "id": "leafy_shrub_02",
+      "definition": "leafy_shrub_02/asset.json"
+    },
+    {
+      "id": "leafy_shrub_03",
+      "definition": "leafy_shrub_03/asset.json"
+    }
+  ],
+  "notes": [
+    "Stylized Finnish vegetation approximations.",
+    "Use card dimensions and pivot from asset.json.",
+    "preview.png displays the intended card proportions.",
+    "Separate texture LODs are not OpenGL mipmap chains.",
+    "Overhead canopy representation is not included.",
+    "World placement and viewer integration are separate."
+  ]
+}
