@@ -19,6 +19,11 @@
 #include <string>
 #include <vector>
 
+using namespace std;
+
+// Config for setting the terrain files' location (folder with terrain_index.txt and "tiles" folder which has .trn files)
+const string tilesLocation = "2008_terrain_waterfixed";
+
 // ===========================================================================
 // Math helpers
 // ===========================================================================
@@ -209,6 +214,12 @@ volatile LONG loaderStop = 0;  // Atomic stop flag checked by the worker.
 std::vector<Request> requests; // Pending tasks; protected by loaderLock.
 std::vector<Result> results;   // Completed tasks; protected by loaderLock.
 
+// Read the background loader's stop flag atomically.
+// Must appear before loadTerrain() and loaderMain().
+bool loaderShouldStop() {
+    return InterlockedCompareExchange(&loaderStop, 0, 0) != 0;
+}
+
 // ===========================================================================
 // Binary terrain-file loading
 // ===========================================================================
@@ -226,115 +237,157 @@ bool readUInt(std::ifstream& file, unsigned int& value) {
     return readBytes(file, &value, 4);
 }
 
-// Read one LOD from a TRN1 file and build its indexed terrain mesh.
+// Read one terrain LOD and build its mesh on the background thread.
 //
-// Runs on the background thread:
-//   - Does not call OpenGL.
-//   - Reads only the selected LOD's elevation data.
-//   - Constructs vertex normals.
-//   - Omits triangles containing missing elevations.
+// Cancellation is checked before loading, between major processing stages,
+// and on each grid row. A synchronous file read itself is not cancellable
+// through this flag, but processing stops once that read returns.
 Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
-    std::ifstream file(filename.c_str(), std::ios::binary); // Input file.
+    // Do not start loading if shutdown has already been requested.
+    if (loaderShouldStop()) return 0;
+
+    std::ifstream file(filename.c_str(), std::ios::binary);
     if (!file) return 0;
 
-    char magic[4];               // Expected four-byte signature: TRN1.
-    unsigned int levels;        // Number of stored detail levels.
-    double bounds[4];           // xmin, ymin, xmax, ymax from the file.
-    float elevationBounds[2];   // Minimum and maximum elevation.
+    char magic[4];             // File signature: TRN1.
+    unsigned int levels;      // Number of stored LODs.
+    double bounds[4];         // xmin, ymin, xmax, ymax.
+    float elevationBounds[2]; // Minimum and maximum elevation.
 
-    // Validate the header before allocating terrain arrays.
+    // Validate the file header.
     if (!readBytes(file, magic, 4)
         || std::string(magic, 4) != "TRN1"
         || !readUInt(file, levels)
         || levels < 1 || levels > 10
         || !readBytes(file, bounds, sizeof(bounds))
-        || !readBytes(file, elevationBounds, sizeof(elevationBounds))) {
+        || !readBytes(
+            file, elevationBounds, sizeof(elevationBounds)
+        )) {
         return 0;
     }
 
-    int selected = std::min(requestedLOD, (int)levels - 1); // Available LOD.
+    if (loaderShouldStop()) return 0;
+
+    // Clamp the requested LOD to the levels available in this file.
+    int selected = std::max(
+        0, std::min(requestedLOD, (int)levels - 1)
+    );
 
     for (unsigned int level = 0; level < levels; ++level) {
+        if (loaderShouldStop()) return 0;
+
         unsigned int columns, rows; // Core vertex-grid dimensions.
 
         if (!readUInt(file, columns) || !readUInt(file, rows))
             return 0;
 
-        // Reject unreasonable dimensions before making allocations.
+        // Prevent unreasonable allocations from invalid file dimensions.
         if (columns < 2 || rows < 2
             || columns > 4096 || rows > 4096)
             return 0;
 
+        // Elevations include one extra sample around every edge.
         size_t haloCount = (size_t)(columns + 2) * (rows + 2);
-        // Each level stores east offsets, south offsets, and halo elevations.
-        size_t bytes = ((size_t)columns + rows + haloCount) * 4;
+
+        // Stored arrays: east offsets, south offsets, halo elevations.
+        size_t bytes = (
+            (size_t)columns + rows + haloCount
+        ) * sizeof(float);
 
         if ((int)level != selected) {
-            // Skip detail levels that are not needed for this request.
+            // Skip levels that are not needed.
             file.seekg((std::streamoff)bytes, std::ios::cur);
             if (!file) return 0;
             continue;
         }
 
-        std::vector<float> east(columns);    // Vertex east offsets.
-        std::vector<float> south(rows);      // Vertex south offsets.
-        std::vector<float> heights(haloCount); // Elevations with one-cell halo.
+        std::vector<float> east(columns);
+        std::vector<float> south(rows);
+        std::vector<float> heights(haloCount);
 
-        if (!readBytes(file, &east[0], columns * 4)
-            || !readBytes(file, &south[0], rows * 4)
-            || !readBytes(file, &heights[0], haloCount * 4))
-            return 0;
+        // Read separately so cancellation can be checked between reads.
+        if (!readBytes(
+            file, &east[0], columns * sizeof(float)
+        )) return 0;
 
-        Mesh* mesh = new Mesh; // Returned to the rendering thread on success.
-        mesh->vertices.resize((size_t)columns * rows);
+        if (loaderShouldStop()) return 0;
 
-        // Nominal sample spacing. The final interval may be shorter because
-        // every LOD includes the tile's exact outer boundary.
+        if (!readBytes(
+            file, &south[0], rows * sizeof(float)
+        )) return 0;
+
+        if (loaderShouldStop()) return 0;
+
+        if (!readBytes(
+            file, &heights[0], haloCount * sizeof(float)
+        )) return 0;
+
+        if (loaderShouldStop()) return 0;
+
+        // Determine nominal sample spacing for halo normal calculations.
         double baseSpacing = east[columns - 1] / (columns - 1);
         if (columns > 2)
             baseSpacing = east[1] - east[0];
 
-        if (baseSpacing <= 0) {
-            delete mesh;
-            return 0;
-        }
+        if (baseSpacing <= 0) return 0;
 
-        // Create the core vertices, using halo elevations for slope estimates.
+        Mesh* mesh = new Mesh;
+        mesh->vertices.resize((size_t)columns * rows);
+
+        // Construct core vertices and their lighting normals.
         for (unsigned int r = 0; r < rows; ++r) {
-            for (unsigned int c = 0; c < columns; ++c) {
-                size_t index = (size_t)r * columns + c; // Mesh vertex index.
-                size_t h = (size_t)(r + 1) * (columns + 2) + c + 1;
-                // h addresses the corresponding elevation inside the halo.
+            // Delete partially built geometry when cancelling.
+            if (loaderShouldStop()) {
+                delete mesh;
+                return 0;
+            }
 
-                float height = heights[h]; // Absolute source elevation.
-                Vertex& v = mesh->vertices[index]; // Vertex being initialized.
+            for (unsigned int c = 0; c < columns; ++c) {
+                size_t index = (size_t)r * columns + c;
+                size_t h = (
+                    (size_t)(r + 1) * (columns + 2)
+                    + c + 1
+                );
+
+                float height = heights[h];
+                Vertex& v = mesh->vertices[index];
 
                 v.x = east[c];
                 v.y = finiteFloat(height)
                     ? (float)(height - originZ) : 0;
                 v.z = south[r];
 
-                float left = heights[h - 1];       // Western neighbor.
-                float right = heights[h + 1];      // Eastern neighbor.
-                float north = heights[h - (columns + 2)]; // Northern neighbor.
-                float southHeight = heights[h + (columns + 2)]; // Southern.
+                // Neighboring elevation samples, including the halo.
+                float left = heights[h - 1];
+                float right = heights[h + 1];
+                float north = heights[h - (columns + 2)];
+                float southHeight = heights[h + (columns + 2)];
 
-                // Distance between the western and eastern sample positions.
+                // Distance between west/east neighboring samples.
                 double dx =
-                    (c == 0 ? baseSpacing : east[c] - east[c-1])
+                    (c == 0
+                        ? baseSpacing
+                        : east[c] - east[c - 1])
                     + (c + 1 == columns
-                       ? baseSpacing : east[c+1] - east[c]);
+                        ? baseSpacing
+                        : east[c + 1] - east[c]);
 
-                // Distance between the northern and southern sample positions.
+                // Distance between north/south neighboring samples.
                 double dz =
-                    (r == 0 ? baseSpacing : south[r] - south[r-1])
+                    (r == 0
+                        ? baseSpacing
+                        : south[r] - south[r - 1])
                     + (r + 1 == rows
-                       ? baseSpacing : south[r+1] - south[r]);
+                        ? baseSpacing
+                        : south[r + 1] - south[r]);
 
-                Vec normal(0, 1, 0); // Flat/upward fallback normal.
+                Vec normal(0, 1, 0); // Flat fallback.
 
-                if (finiteFloat(left) && finiteFloat(right)
-                    && finiteFloat(north) && finiteFloat(southHeight)) {
+                if (dx > 0 && dz > 0
+                    && finiteFloat(left)
+                    && finiteFloat(right)
+                    && finiteFloat(north)
+                    && finiteFloat(southHeight)) {
                     normal = unit(Vec(
                         -(right - left) / dx,
                         1,
@@ -348,48 +401,69 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
             }
         }
 
-        // Reserve enough index storage for two triangles per grid cell.
+        if (loaderShouldStop()) {
+            delete mesh;
+            return 0;
+        }
+
+        // Two triangles per cell, three indexes per triangle.
         mesh->indices.reserve(
             (size_t)(columns - 1) * (rows - 1) * 6
         );
 
+        // Construct triangles, excluding those with missing elevations.
         for (unsigned int r = 0; r + 1 < rows; ++r) {
-            for (unsigned int c = 0; c + 1 < columns; ++c) {
-                unsigned int a = r * columns + c;      // Northwest vertex.
-                unsigned int b = a + 1;                // Northeast vertex.
-                unsigned int d = (r + 1) * columns + c + 1; // Southeast.
-                unsigned int e = d - 1;                // Southwest vertex.
+            if (loaderShouldStop()) {
+                delete mesh;
+                return 0;
+            }
 
-                // Counterclockwise winding produces upward-facing triangles.
-                unsigned int candidates[6] = { a, e, b, b, e, d };
+            for (unsigned int c = 0; c + 1 < columns; ++c) {
+                unsigned int a = r * columns + c; // Northwest.
+                unsigned int b = a + 1;           // Northeast.
+                unsigned int d = (
+                    (r + 1) * columns + c + 1
+                );                               // Southeast.
+                unsigned int e = d - 1;           // Southwest.
+
+                // Upward-facing triangle winding.
+                unsigned int candidates[6] = {
+                    a, e, b,
+                    b, e, d
+                };
 
                 for (int triangle = 0; triangle < 2; ++triangle) {
-                    bool valid = true; // All three source elevations must exist.
+                    bool valid = true;
 
                     for (int k = 0; k < 3; ++k) {
-                        unsigned int i = candidates[triangle * 3 + k];
-                        // Convert mesh index back into grid coordinates.
+                        unsigned int i = candidates[
+                            triangle * 3 + k
+                        ];
                         unsigned int rr = i / columns;
                         unsigned int cc = i % columns;
 
-                        size_t hi = (size_t)(rr + 1) * (columns + 2)
-                                  + cc + 1; // Elevation index including halo.
+                        size_t hi = (
+                            (size_t)(rr + 1) * (columns + 2)
+                            + cc + 1
+                        );
 
-                        if (!finiteFloat(heights[hi])) valid = false;
+                        if (!finiteFloat(heights[hi]))
+                            valid = false;
                     }
 
                     if (valid) {
-                        for (int k = 0; k < 3; ++k)
+                        for (int k = 0; k < 3; ++k) {
                             mesh->indices.push_back(
                                 candidates[triangle * 3 + k]
                             );
+                        }
                     }
                 }
             }
         }
 
-        // Empty meshes are treated as failed/unrenderable loads.
-        if (mesh->indices.empty()) {
+        // Avoid returning a mesh after shutdown or without valid triangles.
+        if (loaderShouldStop() || mesh->indices.empty()) {
             delete mesh;
             return 0;
         }
@@ -399,6 +473,7 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
 
     return 0;
 }
+
 
 // Load project placement and tile metadata from the lightweight text index.
 // Terrain geometry is not read here; it will be streamed later.
@@ -453,13 +528,18 @@ bool loadIndex(const std::string& folder) {
 //
 // Wait for requests, load a mesh without blocking rendering, and publish the
 // result. The tiles vector is not resized after this thread starts.
+// Background loader: cancellation is checked before and after each task.
+
+// Background loader: cancellation is checked before and after each task.
 DWORD WINAPI loaderMain(void*) {
-    while (!InterlockedCompareExchange(&loaderStop, 0, 0)) {
-        // Wake on a request, or periodically to check the stop flag.
+    while (!loaderShouldStop()) {
         WaitForSingleObject(loaderEvent, 100);
 
-        Request request;         // Task taken from the shared queue.
-        bool available = false;  // Whether a task was found.
+        // A shutdown signal should not start another queued task.
+        if (loaderShouldStop()) break;
+
+        Request request;
+        bool available = false;
 
         EnterCriticalSection(&loaderLock);
 
@@ -474,10 +554,17 @@ DWORD WINAPI loaderMain(void*) {
         if (!available) continue;
 
         Mesh* mesh = loadTerrain(
-            tiles[request.tile].filename, request.lod
-        ); // New mesh; null if reading or construction failed.
+            tiles[request.tile].filename,
+            request.lod
+        );
 
-        Result result; // Completed task passed back to the main thread.
+        // The main thread will no longer adopt results during shutdown.
+        if (loaderShouldStop()) {
+            delete mesh;
+            break;
+        }
+
+        Result result;
         result.tile = request.tile;
         result.lod = request.lod;
         result.mesh = mesh;
@@ -489,6 +576,7 @@ DWORD WINAPI loaderMain(void*) {
 
     return 0;
 }
+
 
 // Horizontal distance from the camera to the nearest point of a tile.
 //
@@ -1277,7 +1365,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE,
         terrainFolder = terrainFolder.substr(1, terrainFolder.size()-2);
 
     // With no argument, look for a terrain folder in the working directory.
-    if (terrainFolder.empty()) terrainFolder = "terrain";
+    if (terrainFolder.empty()) terrainFolder = tilesLocation;
 
     if (!loadIndex(terrainFolder)) {
         MessageBoxA(
@@ -1391,10 +1479,48 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE,
         Sleep(1);
     }
 
-    // Stop and join the worker before destroying shared data.
+    // Request cooperative cancellation and wake the worker.
     InterlockedExchange(&loaderStop, 1);
+
+    EnterCriticalSection(&loaderLock);
+    requests.clear();
+    LeaveCriticalSection(&loaderLock);
+
     SetEvent(loaderEvent);
-    WaitForSingleObject(loaderThread, INFINITE);
+
+    // Wait for the worker, but continue servicing Windows messages.
+    // Do not free shared data until the worker has actually exited.
+    for (;;) {
+        DWORD waitResult = MsgWaitForMultipleObjects(
+            1,
+            &loaderThread,
+            FALSE,
+            INFINITE,
+            QS_ALLINPUT
+        );
+
+        if (waitResult == WAIT_OBJECT_0) {
+            // Worker has exited; normal cleanup can safely continue.
+            break;
+        }
+
+        if (waitResult == WAIT_OBJECT_0 + 1) {
+            MSG message;
+
+            while (PeekMessage(&message, 0, 0, 0, PM_REMOVE)) {
+                // Ignore quit messages here; shutdown is already underway.
+                if (message.message != WM_QUIT) {
+                    TranslateMessage(&message);
+                    DispatchMessage(&message);
+                }
+            }
+        } else {
+            // An unexpected wait failure means safe cleanup cannot be
+            // guaranteed. End the process instead of freeing live data.
+            ExitProcess(1);
+        }
+    }
+
 
     CloseHandle(loaderThread);
     CloseHandle(loaderEvent);

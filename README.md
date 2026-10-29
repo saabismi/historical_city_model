@@ -2,28 +2,34 @@
 ** very much work in progress, not ready :D**
 Set of scripts and other guide / utilities to generate a historical city model (or ingredients for it) from various geodata.
 
-Also contains a simple legacy compatible viewer for the historical city model.
+you can use old versions of maastotietokanta (MTK) if they're suitable but you can try to digitise old drawn/printed map sheets and generate terrain and other elements using that.
+I was first trying to digitise 1960s aerial images and maps (peruskartta) but then resorted to 2008 maastotietokanta for simplicity's sake, and for actually progressing in making this pipeline. after the 2008 model can be generated with ease, I can concentrate more on making a 1960s city model.
+
+Also contains a simple legacy compatible viewer for the historical city model "Historyviewer"
 
 it is recommended to run the scripts in osgeo4W shell to have all the dependencies
-the scripts are made using GPT 6.1 Sol (Aalto AI)
+the scripts are made using GPT 6.1 Sol
 
 the scripts are intended to work on data that is using CRS EPSG:3067 (ETRS-TM35FIN)
+some scripts might give warnings if the CRS is wrong and might reproject it and output epsg 3067, but that can't be quaranteed for now.
 
 script order:
-merge_orthos_gpt.py
-tile_orthos_gpt.py
-download_oldest_pointcloud_gpt.py
-make_tiled_dem_glb.py
-prepare_terrain.py
+merge_orthos_gpt.py (merges orthophotos to one big file)
+tile_orthos_gpt.py (turns a large ortho to sensibly sized tiles)
+download_oldest_pointcloud_gpt.py (downloads the oldest available point cloud for an area from csc/maanmittauslaitos)
+make_tiled_dem_glb.py (makes a tiled DEM from the downloaded point cloud, also optionally makes glb files (tiles))
+prepare_terrain.py (makes a lightweight tiled terrain with LOD levels (5 by default) that can be used in "Historyviewer"
+clip_mtk.py (clips maastotietokanta layers to the extent of the merged orthophoto)
 
 install dependencies:
 pip install requests
 pip install "laspy[lazrs]" numpy scipy rasterio trimesh pyproj
+pip install fiona if something doesn't work.
 
 ## Todo
 - integrate geo sam pipeline for making training data for a visual model
 	-after having training data, go over the tiles (of orthophoto) and segment/classify the image content to things like building, forest, shrub, cliff, road, etc.
-- make textures for the glb files using the segmentation
+- make textures for the glb/trn files using the segmentation/maastotietokanta objects
 - generate trees / vegetation using the segmentation 
 - generate roads as vector/polygon objects using the segmentation
 

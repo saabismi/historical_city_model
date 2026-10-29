@@ -1,0 +1,4 @@
+import segmentation_models_pytorch as smp
+model = smp.Unet("resnet34", encoder_weights="imagenet", in_channels=1, classes=5)
+loss = smp.losses.DiceLoss("multiclass", ignore_index=255)
+ce = torch.nn.CrossEntropyLoss(ignore_index=255)   # use ce + dice together
