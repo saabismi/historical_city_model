@@ -202,7 +202,7 @@ double originZ = 0;            // Shared elevation origin.
 
 double loadRadius = 650;       // Request tiles within this horizontal distance.
 double unloadRadius = 850;     // Unload beyond this distance; provides hysteresis.
-double farPlane = 1200;        // Maximum camera-space rendering distance.
+double farPlane = 2000;        // Maximum camera-space rendering distance.
 size_t memoryBudget = 96 * 1024 * 1024; // Resident CPU mesh-cache budget.
 int lodBias = 1;               // Starting LOD: larger numbers mean less detail.
 

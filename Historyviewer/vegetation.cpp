@@ -48,7 +48,7 @@ static std::map<std::string, std::string> tileFiles;
 // One temporary vertex batch for each asset texture.
 static std::vector< std::vector<BillboardVertex> > batches;
 
-static double maximumDistance = 250; // Vegetation render range.
+static double maximumDistance = 1000; // Vegetation render range.
 static float density = 0.65f;        // Stable instance retention threshold.
 static int minimumLOD = 0;          // Low preset can omit near detail.
 static unsigned long plantBudget = 15000; // Per-frame draw cap.
@@ -419,17 +419,17 @@ Data* load(const std::string& filename, bool (*cancelled)()) {
 // Choose practical starting settings; these are not hardware benchmarks.
 void setPreset(int preset) {
     if (preset == 0) {
-        maximumDistance = 150;
+        maximumDistance = 350;
         density = 0.35f;
         minimumLOD = 1;
         plantBudget = 6000;
     } else if (preset == 1) {
-        maximumDistance = 250;
+        maximumDistance = 1000;
         density = 0.65f;
         minimumLOD = 0;
         plantBudget = 15000;
     } else {
-        maximumDistance = 350;
+        maximumDistance = 2000;
         density = 1.0f;
         minimumLOD = 0;
         plantBudget = 30000;

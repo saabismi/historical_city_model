@@ -1,5 +1,5 @@
 # depslib dependency file v1.0
-1793258743 source:e:\github\historical_city_model\historyviewer\main.cpp
+1793370815 source:e:\github\historical_city_model\historyviewer\main.cpp
 	<windows.h>
 	<GL/gl.h>
 	<algorithm>
@@ -9,5 +9,24 @@
 	<fstream>
 	<sstream>
 	<string>
+	<vector>
+	"vegetation.h"
+
+1793370038 e:\github\historical_city_model\historyviewer\vegetation.h
+	<string>
+	<vector>
+	<cstddef>
+
+1793377847 source:e:\github\historical_city_model\historyviewer\vegetation.cpp
+	<windows.h>
+	<GL/gl.h>
+	"vegetation.h"
+	<algorithm>
+	<cmath>
+	<cstring>
+	<fstream>
+	<limits>
+	<map>
+	<sstream>
 	<vector>
 
