@@ -19,10 +19,15 @@
 #include <string>
 #include <vector>
 
+#include "vegetation.h"
+
 using namespace std;
 
 // Config for setting the terrain files' location (folder with terrain_index.txt and "tiles" folder which has .trn files)
-const string tilesLocation = "2008_terrain_water";
+const string tilesLocation = "2008_terrain";
+
+// Folder produced by pack_viewer_vegetation.py.
+const string vegetationLocation = "2008_vegetation_viewer";
 
 // ===========================================================================
 // Math helpers
@@ -113,6 +118,10 @@ struct Mesh {
 struct Tile {
     std::string filename; // Full path to the tile's .trn file.
 
+    std::string vegetationFilename; // Associated VEG1 placement file.
+    vegetation::Data* plants;       // Resident vegetation placements.
+
+
     double xmin, ymin; // Minimum easting and northing.
     double xmax, ymax; // Maximum easting and northing.
     double zmin, zmax; // Minimum and maximum source elevation.
@@ -126,7 +135,8 @@ struct Tile {
     // Initialize loading state. Bounds are filled by loadIndex().
     Tile()
         : mesh(0), loadedLOD(-1), wantedLOD(-1),
-          pending(false), failed(false) {}
+          pending(false), failed(false), plants(0) {}
+
 };
 
 // A task sent from the rendering thread to the background loader.
@@ -137,10 +147,12 @@ struct Request {
 
 // A completed background-loading task.
 struct Result {
-    int tile;   // Tile to receive the result.
-    int lod;    // Requested detail level.
-    Mesh* mesh; // Newly constructed mesh; null on failure.
+    int tile;                    // Destination terrain tile.
+    int lod;                     // Requested terrain detail level.
+    Mesh* mesh;                  // Newly loaded terrain geometry.
+    vegetation::Data* plants;    // Newly loaded vegetation placements.
 };
+
 
 // ===========================================================================
 // Window and rendering state
@@ -530,12 +542,11 @@ bool loadIndex(const std::string& folder) {
 // result. The tiles vector is not resized after this thread starts.
 // Background loader: cancellation is checked before and after each task.
 
-// Background loader: cancellation is checked before and after each task.
+// Load terrain and its corresponding vegetation without OpenGL calls.
 DWORD WINAPI loaderMain(void*) {
     while (!loaderShouldStop()) {
         WaitForSingleObject(loaderEvent, 100);
 
-        // A shutdown signal should not start another queued task.
         if (loaderShouldStop()) break;
 
         Request request;
@@ -558,9 +569,18 @@ DWORD WINAPI loaderMain(void*) {
             request.lod
         );
 
-        // The main thread will no longer adopt results during shutdown.
+        vegetation::Data* plants = 0;
+
+        if (mesh && !loaderShouldStop()) {
+            plants = vegetation::load(
+                tiles[request.tile].vegetationFilename,
+                loaderShouldStop
+            );
+        }
+
         if (loaderShouldStop()) {
             delete mesh;
+            delete plants;
             break;
         }
 
@@ -568,6 +588,7 @@ DWORD WINAPI loaderMain(void*) {
         result.tile = request.tile;
         result.lod = request.lod;
         result.mesh = mesh;
+        result.plants = plants;
 
         EnterCriticalSection(&loaderLock);
         results.push_back(result);
@@ -576,6 +597,7 @@ DWORD WINAPI loaderMain(void*) {
 
     return 0;
 }
+
 
 
 // Horizontal distance from the camera to the nearest point of a tile.
@@ -595,16 +617,22 @@ double tileDistance(const Tile& tile) {
     return std::sqrt(dx*dx + dz*dz);
 }
 
-// Total estimated storage for meshes currently resident in the tile cache.
-// Does not include temporary worker allocations or OpenGL-driver storage.
+// Resident terrain plus vegetation CPU storage.
+// Shared textures and temporary frame batches are not included.
 size_t cacheBytes() {
-    size_t bytes = 0; // Running total.
+    size_t bytes = 0;
 
-    for (size_t i = 0; i < tiles.size(); ++i)
-        if (tiles[i].mesh) bytes += tiles[i].mesh->bytes();
+    for (size_t i = 0; i < tiles.size(); ++i) {
+        if (tiles[i].mesh)
+            bytes += tiles[i].mesh->bytes();
+
+        if (tiles[i].plants)
+            bytes += tiles[i].plants->bytes();
+    }
 
     return bytes;
 }
+
 
 // Accept completed meshes, evict distant terrain, enforce the cache budget,
 // and enqueue nearby tiles that need loading or a different detail level.
@@ -621,20 +649,25 @@ void updateStreaming() {
 
         tile.pending = false;
 
-        if (!result.mesh) {
+                if (!result.mesh) {
+            delete result.plants;
             tile.failed = true;
             continue;
         }
 
-        // The camera may have moved away while the tile was loading.
         if (tileDistance(tile) > unloadRadius) {
             delete result.mesh;
+            delete result.plants;
             continue;
         }
 
         delete tile.mesh;
+        delete tile.plants;
+
         tile.mesh = result.mesh;
+        tile.plants = result.plants;
         tile.loadedLOD = result.lod;
+
     }
 
     // Unload beyond the larger radius, rather than immediately at loadRadius.
@@ -647,6 +680,7 @@ void updateStreaming() {
             tile.mesh = 0;
             tile.loadedLOD = -1;
         }
+
     }
 
     size_t bytes = cacheBytes(); // Current resident mesh storage.
@@ -670,9 +704,17 @@ void updateStreaming() {
         if (farthest < 0) break;
 
         bytes -= tiles[farthest].mesh->bytes();
+
+        if (tiles[farthest].plants)
+            bytes -= tiles[farthest].plants->bytes();
+
         delete tiles[farthest].mesh;
+        delete tiles[farthest].plants;
+
         tiles[farthest].mesh = 0;
+        tiles[farthest].plants = 0;
         tiles[farthest].loadedLOD = -1;
+
     }
 
     int best = -1;              // Nearest tile needing a request.
@@ -919,8 +961,18 @@ void drawOverlay() {
 
     text(12, 22, status);
 
+    char vegetationStatus[128];
+    std::sprintf(
+        vegetationStatus,
+        "Vegetation: %s | %lu plants drawn",
+        vegetation::enabled ? "on" : "off",
+        vegetation::drawnPlants
+    );
+    text(12, 150, vegetationStatus);
+
+
     if (helpVisible) {
-        text(12, 46, "Tab: camera mode    F1: help    F2: wireframe");
+        text(12, 46, "Tab: camera mode    F1: help    F2: wireframe F3 vegetation");
         text(12, 66, "WASD: move    Q/E: down/up    Shift: faster");
         text(12, 86, "Flight: right-drag look; wheel changes speed");
         text(12, 106, "Orbit: left-drag rotate; right-drag pan; wheel zoom");
@@ -1038,6 +1090,24 @@ void render() {
     glDisableClientState(GL_NORMAL_ARRAY);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
+    // Collect vegetation independently of the terrain bounding-box test:
+    // a tall tree may be visible even when the ground beneath it is not.
+    vegetation::beginFrame();
+
+    for (size_t i = 0; i < tiles.size(); ++i) {
+        if (!tiles[i].plants) continue;
+
+        vegetation::collect(
+            tiles[i].plants,
+            camera.x, camera.y, camera.z,
+            originX, originY, originZ,
+            planes
+        );
+    }
+
+    vegetation::draw();
+
+
     if (orbitMode) {
         // Draw a small orange cross at the orbit target.
         // Depth testing remains enabled, so terrain may obscure it.
@@ -1098,6 +1168,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message,
             if (wParam == VK_F2) wireframe = !wireframe;
             if (wParam == VK_TAB) switchCamera();
             if (wParam == VK_HOME) homeCamera();
+            if (wParam == VK_F3) vegetation::enabled = !vegetation::enabled;
+
         }
         return 0;
 
@@ -1410,6 +1482,33 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE,
         return 1;
     }
 
+    // Textures must be created on the main thread with a current GL context.
+    vegetation::setPreset(preset);
+
+    std::string vegetationError;
+
+    if (!vegetation::initialize(
+        vegetationLocation,
+        vegetationError
+    )) {
+        MessageBoxA(
+            windowHandle,
+            vegetationError.c_str(),
+            "Vegetation initialization failed",
+            MB_OK | MB_ICONWARNING
+        );
+
+        // Terrain can still run without vegetation.
+        vegetation::enabled = false;
+    }
+
+    // Match by original terrain basename, not position in the tile vector.
+    for (size_t i = 0; i < tiles.size(); ++i) {
+        tiles[i].vegetationFilename =
+            vegetation::filenameForTerrain(tiles[i].filename);
+    }
+
+
     // Initialize synchronization before starting the worker.
     InitializeCriticalSection(&loaderLock);
     loaderEvent = CreateEventA(0, FALSE, FALSE, 0);
@@ -1526,17 +1625,25 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE,
     CloseHandle(loaderEvent);
 
     // Free completed results that were never adopted into the tile cache.
-    for (size_t i = 0; i < results.size(); ++i)
+        for (size_t i = 0; i < results.size(); ++i) {
         delete results[i].mesh;
+        delete results[i].plants;
+    }
 
-    // Free every currently resident terrain mesh.
-    for (size_t i = 0; i < tiles.size(); ++i)
+    for (size_t i = 0; i < tiles.size(); ++i) {
         delete tiles[i].mesh;
+        delete tiles[i].plants;
+    }
+
 
     DeleteCriticalSection(&loaderLock);
 
     // Delete OpenGL resources while the context is still current.
     if (fontBase) glDeleteLists(fontBase, 256);
+
+
+    // Delete shared vegetation textures before releasing OpenGL.
+    vegetation::shutdown();
 
     // Release the context and the Windows drawing resources.
     wglMakeCurrent(0, 0);

@@ -12,7 +12,7 @@ Example:
 
 Arguments:
     --terrain      Folder containing tile_manifest.json and DEM tiles.
-    --downloads    Folder containing download_manifest.csv, pointclouds/,
+    --downloads    Folder containing download_manifest.csv, pointclouds/ (previously downloaded pointcloud map sheets, not merged point cloud),
                    and _index/2008_latest.shp.
     --mtk          Folder containing the clipped MTK GeoPackages.
     --assets       Folder containing vegetation.json and generated assets.
@@ -116,7 +116,7 @@ CONFIG = {
 
     # Additional polygon exclusions can be added here.
     "exclude_layers": [
-        ("mtk-rakennukset_2009_clipped.gpkg", "rakennus", "buildings"),
+        ("mtk-rakennus_2009_clipped.gpkg", "rakennus", "buildings"),
         ("mtk-vakavesi_2009_clipped.gpkg", "meri", "water"),
         ("mtk-vakavesi_2009_clipped.gpkg", "jarvi", "water"),
     ],
@@ -314,95 +314,233 @@ def archive_relative(value):
 
 def load_oldest_sources(downloads, index_path):
     """
-    Match downloaded files to index footprints and acquisition years.
+    Locate downloaded LAS/LAZ files, read coverage polygons, and assign
+    spatial ownership to the oldest acquisition year.
 
-    Build spatial ownership by subtracting ALL earlier-year coverage from
-    each year's footprints. Same-year files are allowed to overlap.
+    The coverage index may use another CRS; its polygons are transformed
+    to EPSG:3067 before spatial comparisons.
+
+    Same-year files may overlap. Later-year coverage is retained only
+    outside all earlier-year downloaded coverage.
     """
+    downloads = Path(downloads)
+    index_path = Path(index_path)
     manifest_path = downloads / "download_manifest.csv"
-    rows = list(csv.DictReader(
-        manifest_path.open("r", encoding="utf-8-sig", newline="")
-    ))
 
+    if not manifest_path.is_file():
+        raise ValueError(
+            f"Download manifest does not exist: {manifest_path}"
+        )
+
+    # Read the manifest using a context manager so the file is closed.
+    with manifest_path.open(
+        "r", encoding="utf-8-sig", newline=""
+    ) as handle:
+        rows = list(csv.DictReader(handle))
+
+    if not rows:
+        raise ValueError("The download manifest is empty.")
+
+    # Match archive-relative paths to local point-cloud files.
     requested = {}
+
     for row in rows:
         relative = archive_relative(row.get("path") or "")
+
+        # Older manifest versions may contain URLs but no path column.
         if not relative:
-            url = row["url"]
+            url = row.get("url", "")
             marker = "/2008_latest/"
+
             if marker not in url:
-                raise ValueError(f"Cannot parse manifest URL: {url}")
-            relative = url.split(marker, 1)[1]
+                raise ValueError(
+                    f"Cannot parse archive path from manifest URL: {url}"
+                )
+
+            relative = archive_relative(url.split(marker, 1)[1])
 
         filename = Path(relative).name
+
+        # Prefer the current flat pointclouds folder.
         local = downloads / "pointclouds" / filename
+
+        # Fall back to the manifest's recorded location.
         if not local.is_file():
-            local = Path(row["local_path"])
+            recorded_path = row.get("local_path", "")
+            if recorded_path:
+                local = Path(recorded_path)
+
         if not local.is_file():
-            raise ValueError(f"Missing downloaded point cloud: {filename}")
+            raise ValueError(
+                f"Missing downloaded point cloud: {filename}\n"
+                f"Expected it in: {downloads / 'pointclouds'}"
+            )
 
         year = int(row["year"])
+
         requested[relative] = {
             "file": local,
             "year": year,
             "footprints": [],
         }
 
+    # Open the coverage shapefile BEFORE accessing its layer or CRS.
     dataset = ogr.Open(str(index_path), 0)
+
     if dataset is None:
-        raise ValueError(f"Cannot open coverage index: {index_path}")
+        raise ValueError(
+            f"Cannot open coverage index: {index_path}"
+        )
+
     layer = dataset.GetLayer(0)
-    validate_crs(layer.GetSpatialRef(), str(index_path))
+
+    if layer is None:
+        raise ValueError(
+            f"Coverage index has no readable layer: {index_path}"
+        )
+
+    # Read and normalize the source coordinate reference system.
+    index_crs = layer.GetSpatialRef()
+
+    if index_crs is None:
+        raise ValueError(
+            f"Coverage index has no CRS: {index_path}\n"
+            "Ensure its matching .prj file is beside the .shp file."
+        )
+
+    index_crs = index_crs.Clone()
+    index_crs.SetAxisMappingStrategy(
+        osr.OAMS_TRADITIONAL_GIS_ORDER
+    )
+
+    destination_crs = crs_3067()
+    index_transform = None
+
+    if not index_crs.IsSame(destination_crs):
+        print(
+            "Coverage index uses another CRS; "
+            "transforming its polygons to EPSG:3067."
+        )
+
+        index_transform = osr.CoordinateTransformation(
+            index_crs, destination_crs
+        )
+
+    # Locate the path attribute without assuming capitalization.
+    definition = layer.GetLayerDefn()
 
     fields = {
-        layer.GetLayerDefn().GetFieldDefn(i).GetName().lower():
-        layer.GetLayerDefn().GetFieldDefn(i).GetName()
-        for i in range(layer.GetLayerDefn().GetFieldCount())
+        definition.GetFieldDefn(i).GetName().lower():
+        definition.GetFieldDefn(i).GetName()
+        for i in range(definition.GetFieldCount())
     }
+
     if "path" not in fields:
-        raise ValueError("Coverage index has no path attribute.")
+        raise ValueError(
+            "Coverage index has no 'path' attribute."
+        )
+
+    # Collect only polygons corresponding to downloaded files.
+    layer.ResetReading()
 
     for feature in layer:
-        relative = archive_relative(feature.GetField(fields["path"]))
+        value = feature.GetField(fields["path"])
+
+        if value is None:
+            continue
+
+        relative = archive_relative(value)
+
         if relative not in requested:
             continue
+
         geometry = feature.GetGeometryRef()
-        if geometry is not None:
-            requested[relative]["footprints"].append(
-                make_valid(from_wkb(bytes(geometry.ExportToWkb())))
-            )
+
+        if geometry is None or geometry.IsEmpty():
+            continue
+
+        # Modify a clone, not the geometry owned by the source feature.
+        geometry = geometry.Clone()
+
+        if index_transform is not None:
+            status = geometry.Transform(index_transform)
+
+            if status != 0:
+                raise RuntimeError(
+                    f"Could not transform coverage polygon: {relative}"
+                )
+
+        footprint = make_valid(
+            from_wkb(bytes(geometry.ExportToWkb()))
+        )
+
+        if not footprint.is_empty:
+            requested[relative]["footprints"].append(footprint)
+
+    # Close the source shapefile before constructing ownership geometries.
+    layer = None
     dataset = None
 
+    # Combine multiple index polygons belonging to the same source file.
     by_year = defaultdict(list)
+
     for relative, entry in requested.items():
         if not entry["footprints"]:
-            raise ValueError(f"No index footprint found for {relative}")
-        entry["footprint"] = union_all(entry.pop("footprints"))
+            raise ValueError(
+                f"No index footprint found for downloaded file: {relative}"
+            )
+
+        entry["footprint"] = make_valid(
+            union_all(entry.pop("footprints"))
+        )
+
         by_year[entry["year"]].append(entry)
 
     older_coverage = shapely.GeometryCollection()
     sources = []
 
+    # All files within a year are tested against the SAME earlier coverage.
+    # Consequently, overlapping files from the same year remain eligible.
     for year in sorted(by_year):
         year_entries = by_year[year]
+
         for entry in year_entries:
             owner = make_valid(
                 entry["footprint"].difference(older_coverage)
             )
+
             if not owner.is_empty:
                 entry["owner"] = owner
                 sources.append(entry)
 
-        older_coverage = union_all([
-            older_coverage,
-            *[entry["footprint"] for entry in year_entries],
-        ])
+        # Only after processing the entire year do we extend old coverage.
+        older_coverage = make_valid(
+            union_all([
+                older_coverage,
+                *[
+                    entry["footprint"]
+                    for entry in year_entries
+                ],
+            ])
+        )
 
     if not sources:
-        raise ValueError("No usable oldest-year coverage found.")
+        raise ValueError(
+            "No usable oldest-year point-cloud coverage found."
+        )
 
-    tree = STRtree([entry["owner"] for entry in sources])
-    return sources, tree
+    # Spatial index used to find source files for each processing tile.
+    source_tree = STRtree([
+        entry["owner"] for entry in sources
+    ])
+
+    print(
+        f"Prepared oldest-year ownership for "
+        f"{len(sources)} point-cloud files."
+    )
+
+    return sources, source_tree
+
 
 
 # ============================================================================

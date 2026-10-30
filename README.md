@@ -14,12 +14,19 @@ the scripts are intended to work on data that is using CRS EPSG:3067 (ETRS-TM35F
 some scripts might give warnings if the CRS is wrong and might reproject it and output epsg 3067, but that can't be quaranteed for now.
 
 script order:
-merge_orthos_gpt.py (merges orthophotos to one big file)
-tile_orthos_gpt.py (turns a large ortho to sensibly sized tiles)
-download_oldest_pointcloud_gpt.py (downloads the oldest available point cloud for an area from csc/maanmittauslaitos)
-make_tiled_dem_glb.py (makes a tiled DEM from the downloaded point cloud, also optionally makes glb files (tiles))
-prepare_terrain.py (makes a lightweight tiled terrain with LOD levels (5 by default) that can be used in "Historyviewer"
-clip_mtk.py (clips maastotietokanta layers to the extent of the merged orthophoto)
+1. merge_orthos_gpt.py (merges orthophotos to one big file)
+2. tile_orthos_gpt.py (turns a large ortho to sensibly sized tiles)
+3. download_oldest_pointcloud_gpt.py (downloads the oldest available point cloud for an area from csc/maanmittauslaitos)
+4. make_tiled_dem_glb.py (makes a tiled DEM from the downloaded point cloud, also optionally makes glb files (tiles))
+5. prepare_terrain.py (makes a lightweight tiled terrain with LOD levels (5 by default) that can be used in "Historyviewer"
+6. clip_mtk.py (clips maastotietokanta layers to the extent of the merged orthophoto)
+7. generate_vegetation.py (generate vegetation billboards)
+8. prepare_vegetation.py (
+9. prepare_vegetation.py (prepare vegetation areas (tiles and cells) and locations for plants)
+- alternative: prepare_vegetation_parallel.py (runs multiple workers at the same time, should be faster than the standard script on the line above)
+10. pack_viewer_vegetation.py (pack the vegetation tiles and tree billboards to a viewer compatible format)
+alternative in the future:
+- generate_historical_city_model.py (run once and output a complete city model, high possibility that it won't run all the way without problems but technically possible) (this script doesn't really exist yet)
 
 install dependencies:
 pip install requests
@@ -29,13 +36,14 @@ pip install numpy scipy rasterio "laspy[lazrs]" "shapely>=2.0" (for the vegetati
 
 ## Todo
 - integrate geo sam pipeline for making training data for a visual model
-	-after having training data, go over the tiles (of orthophoto) and segment/classify the image content to things like building, forest, shrub, cliff, road, etc.
+	- after having training data, go over the tiles (of orthophoto) and segment/classify the image content to things like building, forest, shrub, cliff, road, etc.
 - make textures for the glb/trn files using the segmentation/maastotietokanta objects
 - generate trees / vegetation using the segmentation 
 - generate roads as vector/polygon objects using the segmentation
+- include grass objects in vegetation
 
 ## Ideas
-- maybe currently standing old buildings should be used, only use segmentation results for demolished buildings
+- in segmentation of old orthoimages or maps maybe currently standing old buildings should be used, only use segmentation results for demolished buildings
 
 ### information about the viewer "Historyviewer"
 It is a C++ OpenGL viewer intended to run also on old hardware (xp era) and windows xp
