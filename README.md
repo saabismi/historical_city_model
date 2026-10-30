@@ -41,6 +41,7 @@ pip install numpy scipy rasterio "laspy[lazrs]" "shapely>=2.0" (for the vegetati
 - generate trees / vegetation using the segmentation 
 - generate roads as vector/polygon objects using the segmentation
 - include grass objects in vegetation
+- low vegetation classified points might include power lines!
 
 ## Ideas
 - in segmentation of old orthoimages or maps maybe currently standing old buildings should be used, only use segmentation results for demolished buildings

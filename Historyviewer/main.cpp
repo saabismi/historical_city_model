@@ -1455,21 +1455,21 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE,
     // Presets adjust horizontal streaming range, visible range, CPU cache,
     // and minimum detail. These are starting values, not hardware detection.
     if (preset == 0) {
-        loadRadius = 450;
-        unloadRadius = 600;
+        loadRadius = 800;
+        unloadRadius = 1100;
         farPlane = 800;
         memoryBudget = 48 * 1024 * 1024;
         lodBias = 2;
     } else if (preset == 1) {
-        loadRadius = 750;
-        unloadRadius = 950;
+        loadRadius = 1200;
+        unloadRadius = 1500;
         farPlane = 1200;
         memoryBudget = 96 * 1024 * 1024;
         lodBias = 1;
     } else {
-        loadRadius = 1100;
-        unloadRadius = 1400;
-        farPlane = 1700;
+        loadRadius = 10000;
+        unloadRadius = 15000;
+        farPlane = 10000;
         memoryBudget = 192 * 1024 * 1024;
         lodBias = 0;
     }

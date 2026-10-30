@@ -383,22 +383,32 @@ Data* load(const std::string& filename, bool (*cancelled)()) {
             double width = asset.width * plant.widthScale;
             double height = asset.height * plant.heightScale;
 
-            // Covers arbitrary billboard rotations and both pivot offsets.
-            double radius = width * std::max(
+            // A fully facing card may tilt in any direction.
+            // Bound it by a sphere around its trunk-base pivot.
+            double horizontalExtent = width * std::max(
                 asset.pivotU, 1.0f - asset.pivotU
             );
 
-            double x = xmin + plant.east;
-            double z = -ymax + plant.south;
-            double bottom = plant.elevation - asset.pivotV * height;
-            double top = plant.elevation + (1-asset.pivotV) * height;
+            double verticalExtent = height * std::max(
+                asset.pivotV, 1.0f - asset.pivotV
+            );
 
-            cell.xmin = std::min(cell.xmin, x-radius);
-            cell.xmax = std::max(cell.xmax, x+radius);
-            cell.ymin = std::min(cell.ymin, bottom);
-            cell.ymax = std::max(cell.ymax, top);
-            cell.zmin = std::min(cell.zmin, z-radius);
-            cell.zmax = std::max(cell.zmax, z+radius);
+            double radius = std::sqrt(
+                horizontalExtent * horizontalExtent
+                + verticalExtent * verticalExtent
+            );
+
+            double x = xmin + plant.east;
+            double y = plant.elevation;
+            double z = -ymax + plant.south;
+
+            cell.xmin = std::min(cell.xmin, x - radius);
+            cell.xmax = std::max(cell.xmax, x + radius);
+            cell.ymin = std::min(cell.ymin, y - radius);
+            cell.ymax = std::max(cell.ymax, y + radius);
+            cell.zmin = std::min(cell.zmin, z - radius);
+            cell.zmax = std::max(cell.zmax, z + radius);
+
 
             cell.plants.push_back(plant);
         }
@@ -420,16 +430,16 @@ Data* load(const std::string& filename, bool (*cancelled)()) {
 void setPreset(int preset) {
     if (preset == 0) {
         maximumDistance = 350;
-        density = 0.35f;
+        density = 0.5f;
         minimumLOD = 1;
         plantBudget = 6000;
     } else if (preset == 1) {
         maximumDistance = 1000;
-        density = 0.65f;
+        density = 0.9f;
         minimumLOD = 0;
         plantBudget = 15000;
     } else {
-        maximumDistance = 2000;
+        maximumDistance = 10000;
         density = 1.0f;
         minimumLOD = 0;
         plantBudget = 30000;
@@ -498,6 +508,92 @@ static void appendCard(
     }
 }
 
+// Append a card facing the camera in both horizontal and vertical directions.
+//
+// Its pivot remains at the plant's base position. Unlike an axial billboard,
+// its top can tilt away from world-up to remain visible from high altitude.
+static void appendFacingCard(
+    std::vector<BillboardVertex>& batch,
+    const Asset& asset,
+    const Plant& plant,
+    double x, double y, double z
+) {
+    double width = asset.width * plant.widthScale;
+    double height = asset.height * plant.heightScale;
+
+    // Direction from the plant base toward the camera.
+    // Positions passed to this function are already camera-relative.
+    double nx = -x;
+    double ny = -y;
+    double nz = -z;
+
+    double length = std::sqrt(nx*nx + ny*ny + nz*nz);
+
+    if (length < 1e-6) {
+        nx = 0;
+        ny = 0;
+        nz = 1;
+    } else {
+        nx /= length;
+        ny /= length;
+        nz /= length;
+    }
+
+    // Horizontal right vector perpendicular to the facing direction.
+    double rx = nz;
+    double ry = 0;
+    double rz = -nx;
+
+    double rightLength = std::sqrt(rx*rx + rz*rz);
+
+    // Directly overhead, the horizontal facing direction is undefined.
+    if (rightLength < 1e-6) {
+        rx = 1;
+        ry = 0;
+        rz = 0;
+    } else {
+        rx /= rightLength;
+        rz /= rightLength;
+    }
+
+    // Card-up = facing direction cross card-right.
+    // This tilts the card toward an elevated camera.
+    double ux = ny*rz - nz*ry;
+    double uy = nz*rx - nx*rz;
+    double uz = nx*ry - ny*rx;
+
+    double left = -asset.pivotU * width;
+    double right = (1.0 - asset.pivotU) * width;
+    double bottom = -asset.pivotV * height;
+    double top = (1.0 - asset.pivotV) * height;
+
+    double horizontal[4] = { left, right, right, left };
+    double vertical[4] = { bottom, bottom, top, top };
+
+    float textureU[4] = { 0, 1, 1, 0 };
+    float textureV[4] = { 0, 0, 1, 1 };
+
+    for (int i = 0; i < 4; ++i) {
+        BillboardVertex vertex;
+
+        vertex.x = (float)(
+            x + rx*horizontal[i] + ux*vertical[i]
+        );
+        vertex.y = (float)(
+            y + ry*horizontal[i] + uy*vertical[i]
+        );
+        vertex.z = (float)(
+            z + rz*horizontal[i] + uz*vertical[i]
+        );
+
+        vertex.u = textureU[i];
+        vertex.v = textureV[i];
+        vertex.r = vertex.g = vertex.b = plant.tint;
+
+        batch.push_back(vertex);
+    }
+}
+
 
 // Cull spatial cells and choose each plant's LOD by actual 3D distance.
 void collect(
@@ -553,6 +649,18 @@ void collect(
             int lod = distance < 60 ? 0 : (distance < 150 ? 1 : 2);
             lod = std::max(lod, minimumLOD);
 
+            // Switch to a facing billboard when looking steeply downward
+            // at a plant, even if it is within near/medium LOD distance.
+            double horizontalDistance = std::sqrt(x*x + z*z);
+            double cameraHeightAbovePlant = -y;
+
+            if (cameraHeightAbovePlant > 0
+                && cameraHeightAbovePlant > horizontalDistance) {
+                // More than approximately 45 degrees above the plant.
+                lod = 2;
+            }
+
+
             std::size_t firstTexture = plant.asset * 5;
 
             if (lod < 2) {
@@ -569,21 +677,15 @@ void collect(
                     x,y,z, -sine,cosine
                 );
             } else {
-                // Axial billboard: upright, rotating only around vertical.
-                double horizontalDistance = std::sqrt(x*x+z*z);
-                double rightX = 1;
-                double rightZ = 0;
-
-                if (horizontalDistance > 1e-6) {
-                    rightX = -z/horizontalDistance;
-                    rightZ = x/horizontalDistance;
-                }
-
-                appendCard(
-                    batches[firstTexture+4], asset, plant,
-                    x,y,z,rightX,rightZ
+                // Fully camera-facing far LOD, visible from above.
+                appendFacingCard(
+                    batches[firstTexture + 4],
+                    asset,
+                    plant,
+                    x, y, z
                 );
             }
+
 
             ++drawnPlants;
         }
