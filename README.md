@@ -1,6 +1,8 @@
 # historical_city_model (WIP)
-** very much work in progress, not ready :D**
+**very much work in progress, not ready :D**
 Set of scripts and other guide / utilities to generate a historical city model (or ingredients for it) from various geodata.
+
+![screenshot of the Historyviewer showcasing trees and terrain in Otaniemi](screenshots/viewer_trees_otaniemi.png)
 
 you can use old versions of maastotietokanta (MTK) if they're suitable but you can try to digitise old drawn/printed map sheets and generate terrain and other elements using that.
 I was first trying to digitise 1960s aerial images and maps (peruskartta) but then resorted to 2008 maastotietokanta for simplicity's sake, and for actually progressing in making this pipeline. after the 2008 model can be generated with ease, I can concentrate more on making a 1960s city model.

@@ -1101,7 +1101,9 @@ void render() {
             tiles[i].plants,
             camera.x, camera.y, camera.z,
             originX, originY, originZ,
-            planes
+            planes,
+            yaw,
+            pitch
         );
     }
 

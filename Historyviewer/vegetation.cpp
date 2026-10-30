@@ -48,6 +48,29 @@ static std::map<std::string, std::string> tileFiles;
 // One temporary vertex batch for each asset texture.
 static std::vector< std::vector<BillboardVertex> > batches;
 
+// One eligible plant awaiting distance-prioritized rendering.
+// Pointers remain valid during collect()/draw(); tile eviction happens
+// earlier in the frame, not during vegetation rendering.
+struct PlantCandidate {
+    const Plant* plant; // Resident plant instance.
+    double x, y, z;    // Camera-relative trunk-base position.
+    double distance;   // Distance to approximate card center.
+    double cameraYaw;
+    double cameraPitch;
+};
+
+// Reused each frame. This stores candidates, not billboard vertices.
+static std::vector<PlantCandidate> candidates;
+
+// Sort nearer vegetation before farther vegetation.
+static bool nearerPlant(
+    const PlantCandidate& a,
+    const PlantCandidate& b
+) {
+    return a.distance < b.distance;
+}
+
+
 static double maximumDistance = 1000; // Vegetation render range.
 static float density = 0.65f;        // Stable instance retention threshold.
 static int minimumLOD = 0;          // Low preset can omit near detail.
@@ -446,14 +469,14 @@ void setPreset(int preset) {
     }
 }
 
-
-// Clear frame geometry but retain vector capacity for reuse.
+// Clear frame data while retaining allocated capacity.
 void beginFrame() {
     drawnPlants = 0;
+    candidates.clear();
+
     for (std::size_t i = 0; i < batches.size(); ++i)
         batches[i].clear();
 }
-
 
 // Conservative camera-relative AABB/frustum test.
 static bool visibleBox(
@@ -595,107 +618,206 @@ static void appendFacingCard(
 }
 
 
-// Cull spatial cells and choose each plant's LOD by actual 3D distance.
+// Collect vegetation candidates from visible cells.
+//
+// Budget selection is deferred until draw(), after every loaded tile has
+// contributed candidates. This prevents early tiles from consuming the
+// whole budget before nearer vegetation in later tiles is considered.
 void collect(
     const Data* data,
     double cameraX, double cameraY, double cameraZ,
     double originX, double originY, double originZ,
-    const double planes[6][4]
+    const double planes[6][4],
+    double cameraYaw,
+    double cameraPitch
 ) {
-    if (!enabled || !data || drawnPlants >= plantBudget) return;
+    if (!enabled || !data) return;
+
+    const double maximumDistanceSquared =
+        maximumDistance * maximumDistance;
 
     for (std::size_t i = 0; i < data->cells.size(); ++i) {
         const Cell& cell = data->cells[i];
 
-        double x0 = cell.xmin-originX-cameraX;
-        double x1 = cell.xmax-originX-cameraX;
-        double y0 = cell.ymin-originZ-cameraY;
-        double y1 = cell.ymax-originZ-cameraY;
-        double z0 = cell.zmin+originY-cameraZ;
-        double z1 = cell.zmax+originY-cameraZ;
+        double x0 = cell.xmin - originX - cameraX;
+        double x1 = cell.xmax - originX - cameraX;
+        double y0 = cell.ymin - originZ - cameraY;
+        double y1 = cell.ymax - originZ - cameraY;
+        double z0 = cell.zmin + originY - cameraZ;
+        double z1 = cell.zmax + originY - cameraZ;
 
-        if (!visibleBox(x0,y0,z0,x1,y1,z1,planes)) continue;
+        // Restore the cell visibility test.
+        if (!visibleBox(x0, y0, z0, x1, y1, z1, planes))
+            continue;
 
-        // Distance to nearest point of the cell's expanded bounding box.
         double dx = std::max(x0, std::max(0.0, -x1));
         double dy = std::max(y0, std::max(0.0, -y1));
         double dz = std::max(z0, std::max(0.0, -z1));
 
-        if (dx*dx+dy*dy+dz*dz > maximumDistance*maximumDistance)
+        if (dx*dx + dy*dy + dz*dz > maximumDistanceSquared)
             continue;
 
         for (std::size_t j = 0; j < cell.plants.size(); ++j) {
-            if (drawnPlants >= plantBudget) return;
-
             const Plant& plant = cell.plants[j];
+
+            // Apply stable preset density before creating candidates.
             if (plant.priority > density) continue;
 
             const Asset& asset = assets[plant.asset];
 
-            double x = data->xmin+plant.east-originX-cameraX;
-            double y = plant.elevation-originZ-cameraY;
-            double z = originY-data->ymax+plant.south-cameraZ;
+            double x =
+                data->xmin + plant.east - originX - cameraX;
+            double y =
+                plant.elevation - originZ - cameraY;
+            double z =
+                originY - data->ymax + plant.south - cameraZ;
 
-            // Measure distance to the approximate crown/card center.
-            double centerY = y + (
-                0.5-asset.pivotV
-            ) * asset.height * plant.heightScale;
+            double width = asset.width * plant.widthScale;
+            double height = asset.height * plant.heightScale;
 
-            double distance = std::sqrt(
-                x*x + centerY*centerY + z*z
+            // Conservative sphere around the trunk-base pivot, suitable
+            // for upright crossed cards and fully tilted billboards.
+            double horizontalExtent = width * std::max(
+                asset.pivotU, 1.0f - asset.pivotU
             );
-            if (distance > maximumDistance) continue;
+            double verticalExtent = height * std::max(
+                asset.pivotV, 1.0f - asset.pivotV
+            );
+            double radius = std::sqrt(
+                horizontalExtent * horizontalExtent
+                + verticalExtent * verticalExtent
+            );
 
-            int lod = distance < 60 ? 0 : (distance < 150 ? 1 : 2);
-            lod = std::max(lod, minimumLOD);
-
-            // Switch to a facing billboard when looking steeply downward
-            // at a plant, even if it is within near/medium LOD distance.
-            double horizontalDistance = std::sqrt(x*x + z*z);
-            double cameraHeightAbovePlant = -y;
-
-            if (cameraHeightAbovePlant > 0
-                && cameraHeightAbovePlant > horizontalDistance) {
-                // More than approximately 45 degrees above the plant.
-                lod = 2;
+            // Individual plant culling prevents off-screen plants in a
+            // partially visible cell from consuming the render budget.
+            if (!visibleBox(
+                x - radius, y - radius, z - radius,
+                x + radius, y + radius, z + radius,
+                planes
+            )) {
+                continue;
             }
 
+            double centerY =
+                y + (0.5 - asset.pivotV) * height;
 
-            std::size_t firstTexture = plant.asset * 5;
+            double distanceSquared =
+                x*x + centerY*centerY + z*z;
 
-            if (lod < 2) {
-                std::size_t slot = firstTexture + (lod == 0 ? 0 : 2);
-                double cosine = std::cos(plant.yaw);
-                double sine = std::sin(plant.yaw);
+            if (distanceSquared > maximumDistanceSquared)
+                continue;
 
-                appendCard(
-                    batches[slot], asset, plant,
-                    x,y,z, cosine,sine
-                );
-                appendCard(
-                    batches[slot+1], asset, plant,
-                    x,y,z, -sine,cosine
-                );
-            } else {
-                // Fully camera-facing far LOD, visible from above.
-                appendFacingCard(
-                    batches[firstTexture + 4],
-                    asset,
-                    plant,
-                    x, y, z
-                );
-            }
+            PlantCandidate candidate;
+            candidate.plant = &plant;
+            candidate.x = x;
+            candidate.y = y;
+            candidate.z = z;
+            candidate.distance = std::sqrt(distanceSquared);
+            candidate.cameraYaw = cameraYaw;
+            candidate.cameraPitch = cameraPitch;
 
-
-            ++drawnPlants;
+            candidates.push_back(candidate);
         }
     }
+}
+
+// Select the nearest eligible plants and build texture-grouped geometry.
+// The budget now applies globally across all loaded vegetation tiles.
+static void buildSelectedBatches() {
+    std::size_t selectedCount = std::min(
+        candidates.size(),
+        (std::size_t)plantBudget
+    );
+
+    if (selectedCount == 0) return;
+
+    // If over budget, partition so the first selectedCount entries are
+    // the nearest plants, without sorting every distant candidate.
+    if (selectedCount < candidates.size()) {
+        std::nth_element(
+            candidates.begin(),
+            candidates.begin() + selectedCount,
+            candidates.end(),
+            nearerPlant
+        );
+    }
+
+    // Sort the selected portion for predictable nearest-first processing.
+    std::sort(
+        candidates.begin(),
+        candidates.begin() + selectedCount,
+        nearerPlant
+    );
+
+    for (std::size_t i = 0; i < selectedCount; ++i) {
+        const PlantCandidate& candidate = candidates[i];
+        const Plant& plant = *candidate.plant;
+        const Asset& asset = assets[plant.asset];
+
+        int lod = candidate.distance < 60
+            ? 0
+            : (candidate.distance < 150 ? 1 : 2);
+
+        lod = std::max(lod, minimumLOD);
+
+        // Use the facing billboard for steep overhead views.
+        // Remove this block if you prefer to retain upright near cards.
+        double horizontalDistance = std::sqrt(
+            candidate.x * candidate.x
+            + candidate.z * candidate.z
+        );
+
+        double cameraHeightAbovePlant = -candidate.y;
+
+        if (cameraHeightAbovePlant > 0
+            && cameraHeightAbovePlant > horizontalDistance) {
+            lod = 2;
+        }
+
+        std::size_t firstTexture = plant.asset * 5;
+
+        if (lod < 2) {
+            std::size_t slot =
+                firstTexture + (lod == 0 ? 0 : 2);
+
+            double cosine = std::cos(plant.yaw);
+            double sine = std::sin(plant.yaw);
+
+            appendCard(
+                batches[slot],
+                asset,
+                plant,
+                candidate.x, candidate.y, candidate.z,
+                cosine, sine
+            );
+
+            appendCard(
+                batches[slot + 1],
+                asset,
+                plant,
+                candidate.x, candidate.y, candidate.z,
+                -sine, cosine
+            );
+        } else {
+            appendFacingCard(
+                batches[firstTexture + 4],
+                asset,
+                plant,
+                candidate.x, candidate.y, candidate.z
+            );
+        }
+    }
+
+    drawnPlants = (unsigned long)selectedCount;
 }
 
 
 // Draw batches with alpha testing, then restore terrain/overlay state.
 void draw() {
     if (!enabled) return;
+
+    // Apply the global nearest-first budget before submitting geometry.
+    buildSelectedBatches();
 
     glPushAttrib(
         GL_ENABLE_BIT | GL_TEXTURE_BIT | GL_COLOR_BUFFER_BIT
@@ -713,6 +835,7 @@ void draw() {
 
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
+
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
@@ -753,6 +876,8 @@ void shutdown() {
         for (int j = 0; j < 5; ++j)
             if (assets[i].texture[j])
                 glDeleteTextures(1, &assets[i].texture[j]);
+
+    candidates.clear();
 
     assets.clear();
     tileFiles.clear();

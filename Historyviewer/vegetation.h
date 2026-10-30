@@ -66,8 +66,11 @@ void collect(
     const Data* data,
     double cameraX, double cameraY, double cameraZ,
     double originX, double originY, double originZ,
-    const double planes[6][4]
+    const double planes[6][4],
+    double cameraYaw,
+    double cameraPitch
 );
+
 
 // Draw texture-grouped billboard batches and restore OpenGL state.
 void draw();
