@@ -29,12 +29,19 @@ script order:
 10. pack_viewer_vegetation.py (pack the vegetation tiles and tree billboards to a viewer compatible format)
 alternative in the future:
 - generate_historical_city_model.py (run once and output a complete city model, high possibility that it won't run all the way without problems but technically possible) (this script doesn't really exist yet)
+11. prepare_buildings.py (prepare building geopackage and point cloud data for roofer)
+12.  run_roofer.bat (in the folder made by prepare_buildings_for_roofer.bat) (run roofer with certain arguments)
+13. prepare_buildings_from_roofer.py
 
 install dependencies:
 pip install requests
 pip install "laspy[lazrs]" numpy scipy rasterio trimesh pyproj
 pip install fiona if something doesn't work.
 pip install numpy scipy rasterio "laspy[lazrs]" "shapely>=2.0" (for the vegetation generator)
+roofer 1.0.0 (included in the directory) add to environment variable in windows cmd: set "PATH=E:\Github\historical_city_model\roofer-v1.0.0\bin;%PATH%"
+pip install numpy trimesh shapely mapbox-earcut (for building preparation from roofer to viewer)
+
+
 
 ## Todo
 - integrate geo sam pipeline for making training data for a visual model

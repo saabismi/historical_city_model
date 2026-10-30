@@ -1,0 +1,30 @@
+{
+  "input_buildings": "E:\\Github\\historical_city_model\\MTK_2009_clipped\\MTK-rakennus_2009_clipped.gpkg",
+  "input_layer": "rakennus",
+  "coverage_index": "E:\\Github\\historical_city_model\\espoo1965_clouds\\_index\\2008_latest.shp",
+  "crs": "EPSG:3067",
+  "building_count": 100,
+  "ground_context_buffer_metres": 40,
+  "roof_selection": "Original class 1 inside exact selected footprints, written as class 6",
+  "ground_selection": "Original class 2 inside ground-context region",
+  "roof_candidate_points": 7797,
+  "ground_points": 69906,
+  "uncovered_context_area_m2": 0.0,
+  "point_attributes": "XYZ and classification only; other source attributes are not retained.",
+  "sources": [
+    {
+      "archive_path": "2008/L413/1/L4132E3.laz",
+      "local_path": "E:\\Github\\historical_city_model\\espoo1965_clouds\\pointclouds\\L4132E3.laz",
+      "year": 2008,
+      "roof_candidate_points": 7797,
+      "ground_points": 69906
+    }
+  ],
+  "warnings": [
+    "Class-1 points are candidates, not verified roof points.",
+    "Same-year overlapping files can both contribute points.",
+    "Footprint/point-cloud date and alignment differences remain.",
+    "Roof overhangs are not generated at this stage.",
+    "Generated building IDs are persistent only if buildings.gpkg is retained and reused."
+  ]
+}

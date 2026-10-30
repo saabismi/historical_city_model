@@ -13,4 +13,14 @@ Historyviewer/2008_vegetation_viewer
 Historyviewer/2008_vegetation_4workers
 Historyviewer/2008_vegetation_test
 Historyviewer/assets
+Historyviewer/2008_buildings_test
 mtk_2009_clipped/
+roofer-v1.0.0/
+roofer_test/roofer_output
+*.laz
+*.las
+*.gpkg
+*.tif
+*.tiff
+*.glb
+*.bld
