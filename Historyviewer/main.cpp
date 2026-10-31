@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "vegetation.h"
+#include "buildings.h"
 
 using namespace std;
 
@@ -28,6 +29,10 @@ const string tilesLocation = "2008_terrain";
 
 // Folder produced by pack_viewer_vegetation.py.
 const string vegetationLocation = "2008_vegetation_viewer";
+
+// Output folder produced by generate_buildings.py.
+const string buildingsLocation = "2008_buildings_textured";
+
 
 // ===========================================================================
 // Math helpers
