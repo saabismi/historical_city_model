@@ -1,9 +1,8 @@
 // Request Windows XP-compatible API declarations.
-// Actual XP compatibility also depends on your compiler/runtime.
+// Actual XP compatibility also depends on the compiler and runtime.
 #define WINVER 0x0501
 #define _WIN32_WINNT 0x0501
 
-// Exclude unnecessary Windows headers and avoid min/max macros.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 
@@ -15,7 +14,6 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -24,58 +22,42 @@
 
 using namespace std;
 
-// Config for setting the terrain files' location (folder with terrain_index.txt and "tiles" folder which has .trn files)
+// Existing terrain location: unchanged.
 const string tilesLocation = "2008_terrain";
 
-// Folder produced by pack_viewer_vegetation.py.
+// Existing vegetation location: unchanged.
 const string vegetationLocation = "2008_vegetation_viewer";
 
-// Output folder produced by generate_buildings.py.
-const string buildingsLocation = "2008_buildings_textured";
+// NEW: folder containing building_index.txt, building_materials.txt,
+// textures/, and tiles/. Change this name to match your actual output folder.
+const string buildingsLocation = "2008_buildings_textured_fixed";
 
-
-// ===========================================================================
-// Math helpers
-// ===========================================================================
-
-// Used to convert angles between degrees and radians.
 const double PI = 3.14159265358979323846;
 
-// A three-dimensional vector.
-//
-// Viewer coordinates:
-//   X: east
-//   Y: up
-//   Z: south
+// Viewer coordinates: X east, Y up, Z south.
 struct Vec {
-    double x, y, z; // Components of the vector.
+    double x, y, z;
 
-    // Construct a vector; omitted components default to zero.
     Vec(double X = 0, double Y = 0, double Z = 0)
         : x(X), y(Y), z(Z) {}
 
-    // Add two vectors.
-    Vec operator+(const Vec& b) const {
-        return Vec(x + b.x, y + b.y, z + b.z);
+    Vec operator+(const Vec& other) const {
+        return Vec(x + other.x, y + other.y, z + other.z);
     }
 
-    // Subtract another vector.
-    Vec operator-(const Vec& b) const {
-        return Vec(x - b.x, y - b.y, z - b.z);
+    Vec operator-(const Vec& other) const {
+        return Vec(x - other.x, y - other.y, z - other.z);
     }
 
-    // Multiply the vector by a scalar.
-    Vec operator*(double s) const {
-        return Vec(x * s, y * s, z * s);
+    Vec operator*(double scalar) const {
+        return Vec(x * scalar, y * scalar, z * scalar);
     }
 };
 
-// Calculate the dot product, used for lengths and projections.
 double dot(const Vec& a, const Vec& b) {
     return a.x*b.x + a.y*b.y + a.z*b.z;
 }
 
-// Calculate a vector perpendicular to both input vectors.
 Vec cross(const Vec& a, const Vec& b) {
     return Vec(
         a.y*b.z - a.z*b.y,
@@ -84,194 +66,167 @@ Vec cross(const Vec& a, const Vec& b) {
     );
 }
 
-// Normalize a vector to length one.
-// Return an upward vector if the input is too small to normalize.
-Vec unit(const Vec& a) {
-    double length = std::sqrt(dot(a, a)); // Input vector length.
-    return length > 1e-12 ? a * (1.0 / length) : Vec(0, 1, 0);
+Vec unit(const Vec& vector) {
+    double length = std::sqrt(dot(vector, vector));
+    return length > 1e-12
+        ? vector * (1.0 / length)
+        : Vec(0, 1, 0);
 }
 
-// Check whether a terrain value is usable.
-// NaN fails "value == value"; the bounds reject infinities and extreme values.
 bool finiteFloat(float value) {
     return value == value && value > -1e30f && value < 1e30f;
 }
 
-// ===========================================================================
-// Terrain data structures
-// ===========================================================================
-
-// One renderable vertex: position followed by its surface normal.
+// Terrain vertex: position followed by normal.
 struct Vertex {
-    float x, y, z;    // Tile-local position; Y uses the shared elevation origin.
-    float nx, ny, nz; // Unit normal used by fixed-function lighting.
+    float x, y, z;
+    float nx, ny, nz;
 };
 
-// One terrain mesh at one level of detail.
 struct Mesh {
-    std::vector<Vertex> vertices;       // Vertex positions and normals.
-    std::vector<unsigned int> indices;  // Three vertex indexes per triangle.
+    std::vector<Vertex> vertices;
+    std::vector<unsigned int> indices;
 
-    // Estimate allocated CPU storage, including spare vector capacity.
     size_t bytes() const {
         return vertices.capacity() * sizeof(Vertex)
              + indices.capacity() * sizeof(unsigned int);
     }
 };
 
-// Metadata and loading state for a terrain tile.
+// Each terrain tile may have vegetation and buildings, or neither.
+//
+// Only building tiles listed in building_index.txt receive a
+// buildingFilename. All other terrain tiles work normally.
 struct Tile {
-    std::string filename; // Full path to the tile's .trn file.
+    std::string filename;
+    std::string vegetationFilename;
+    std::string buildingFilename;
 
-    std::string vegetationFilename; // Associated VEG1 placement file.
-    vegetation::Data* plants;       // Resident vegetation placements.
+    vegetation::Data* plants;
+    buildings::Data* structures;
 
+    double xmin, ymin;
+    double xmax, ymax;
+    double zmin, zmax;
 
-    double xmin, ymin; // Minimum easting and northing.
-    double xmax, ymax; // Maximum easting and northing.
-    double zmin, zmax; // Minimum and maximum source elevation.
+    Mesh* mesh;
+    int loadedLOD;
+    int wantedLOD;
+    bool pending;
+    bool failed;
 
-    Mesh* mesh;       // Currently resident mesh; null if not loaded.
-    int loadedLOD;    // Requested LOD of resident mesh; -1 if absent.
-    int wantedLOD;    // LOD currently selected by the distance rule.
-    bool pending;     // True while a request is queued or being processed.
-    bool failed;      // True after a loading failure; prevents repeated retries.
-
-    // Initialize loading state. Bounds are filled by loadIndex().
     Tile()
-        : mesh(0), loadedLOD(-1), wantedLOD(-1),
-          pending(false), failed(false), plants(0) {}
-
+        : plants(0),
+          structures(0),
+          mesh(0),
+          loadedLOD(-1),
+          wantedLOD(-1),
+          pending(false),
+          failed(false) {}
 };
 
-// A task sent from the rendering thread to the background loader.
 struct Request {
-    int tile; // Index into the global tiles vector.
-    int lod;  // Requested detail level.
+    int tile;
+    int lod;
 };
 
-// A completed background-loading task.
 struct Result {
-    int tile;                    // Destination terrain tile.
-    int lod;                     // Requested terrain detail level.
-    Mesh* mesh;                  // Newly loaded terrain geometry.
-    vegetation::Data* plants;    // Newly loaded vegetation placements.
+    int tile;
+    int lod;
+    Mesh* mesh;
+    vegetation::Data* plants;
+    buildings::Data* structures;
 };
 
+// Window and OpenGL objects.
+HWND windowHandle = 0;
+HDC deviceContext = 0;
+HGLRC renderingContext = 0;
+GLuint fontBase = 0;
 
-// ===========================================================================
-// Window and rendering state
-// ===========================================================================
+int viewportWidth = 1100;
+int viewportHeight = 750;
 
-HWND windowHandle = 0;          // Main Windows window.
-HDC deviceContext = 0;          // Window drawing surface.
-HGLRC renderingContext = 0;     // OpenGL rendering context.
-GLuint fontBase = 0;            // First bitmap-font display-list identifier.
+// Controls.
+bool running = true;
+bool helpVisible = true;
+bool wireframe = false;
+bool orbitMode = true;
 
-int viewportWidth = 1100;      // Current render area width.
-int viewportHeight = 750;      // Current render area height.
+bool leftDragging = false;
+bool rightDragging = false;
+int mouseX = 0;
+int mouseY = 0;
 
-bool running = true;           // Main-loop continuation flag.
-bool helpVisible = true;       // Whether to show keyboard/mouse help.
-bool wireframe = false;        // Draw triangle outlines instead of filled faces.
-bool orbitMode = true;         // Orbit mode if true; free flight otherwise.
+bool keys[256] = { false };
 
-bool leftDragging = false;     // Left mouse button is held.
-bool rightDragging = false;    // Right mouse button is held.
-int mouseX = 0;                // Previous mouse X position.
-int mouseY = 0;                // Previous mouse Y position.
+// Camera.
+Vec camera;
+Vec target;
+double yaw = 0;
+double pitch = -0.5;
+double orbitDistance = 800;
+double movementSpeed = 80;
 
-bool keys[256] = { false };    // Current state of Windows virtual keys.
+// Terrain index and shared map origin.
+std::vector<Tile> tiles;
+std::string terrainFolder;
 
-// ===========================================================================
-// Camera and terrain placement
-// ===========================================================================
+double originX = 0;
+double originY = 0;
+double originZ = 0;
 
-Vec camera;                    // Camera position relative to the shared origin.
-Vec target;                    // Orbit target relative to the shared origin.
-double yaw = 0;                // Horizontal viewing angle in radians.
-double pitch = -0.5;           // Vertical viewing angle in radians.
-double orbitDistance = 800;    // Camera-to-target distance in metres.
-double movementSpeed = 80;     // Normal keyboard movement speed in metres/second.
+// Streaming defaults. The graphics presets below retain your actual
+// configured values.
+double loadRadius = 650;
+double unloadRadius = 850;
+double farPlane = 2000;
+size_t memoryBudget = 96 * 1024 * 1024;
+int lodBias = 1;
 
-std::vector<Tile> tiles;       // Metadata for every tile; meshes load on demand.
-std::string terrainFolder;    // Folder containing terrain_index.txt.
+// Terrain frame statistics.
+int drawnTiles = 0;
+unsigned long drawnTriangles = 0;
+double fps = 0;
 
-double originX = 0;            // Shared easting origin.
-double originY = 0;            // Shared northing origin.
-double originZ = 0;            // Shared elevation origin.
+// Background worker state.
+CRITICAL_SECTION loaderLock;
+HANDLE loaderEvent = 0;
+HANDLE loaderThread = 0;
+volatile LONG loaderStop = 0;
 
-// ===========================================================================
-// Streaming and graphics-preset settings
-// ===========================================================================
+std::vector<Request> requests;
+std::vector<Result> results;
 
-double loadRadius = 650;       // Request tiles within this horizontal distance.
-double unloadRadius = 850;     // Unload beyond this distance; provides hysteresis.
-double farPlane = 2000;        // Maximum camera-space rendering distance.
-size_t memoryBudget = 96 * 1024 * 1024; // Resident CPU mesh-cache budget.
-int lodBias = 1;               // Starting LOD: larger numbers mean less detail.
-
-// ===========================================================================
-// Statistics
-// ===========================================================================
-
-int drawnTiles = 0;            // Tiles drawn during the most recent frame.
-unsigned long drawnTriangles = 0; // Triangles submitted during that frame.
-double fps = 0;                // Smoothed displayed frame rate.
-
-// ===========================================================================
-// Background-loader synchronization
-// ===========================================================================
-
-CRITICAL_SECTION loaderLock;   // Protects requests and results.
-HANDLE loaderEvent = 0;        // Wakes the worker when a request is added.
-HANDLE loaderThread = 0;       // Background thread handle.
-volatile LONG loaderStop = 0;  // Atomic stop flag checked by the worker.
-
-std::vector<Request> requests; // Pending tasks; protected by loaderLock.
-std::vector<Result> results;   // Completed tasks; protected by loaderLock.
-
-// Read the background loader's stop flag atomically.
-// Must appear before loadTerrain() and loaderMain().
 bool loaderShouldStop() {
     return InterlockedCompareExchange(&loaderStop, 0, 0) != 0;
 }
 
-// ===========================================================================
-// Binary terrain-file loading
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// Terrain-file loading
+// ---------------------------------------------------------------------------
 
-// Read exactly the requested number of bytes.
-// Return false if the file is truncated or unreadable.
 bool readBytes(std::ifstream& file, void* data, size_t bytes) {
     file.read((char*)data, (std::streamsize)bytes);
     return !!file;
 }
 
-// Read one little-endian 32-bit unsigned integer.
-// This directly matches the intended Windows x86 target.
 bool readUInt(std::ifstream& file, unsigned int& value) {
     return readBytes(file, &value, 4);
 }
 
-// Read one terrain LOD and build its mesh on the background thread.
-//
-// Cancellation is checked before loading, between major processing stages,
-// and on each grid row. A synchronous file read itself is not cancellable
-// through this flag, but processing stops once that read returns.
+// Read one selected terrain LOD on the background thread.
 Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
-    // Do not start loading if shutdown has already been requested.
     if (loaderShouldStop()) return 0;
 
     std::ifstream file(filename.c_str(), std::ios::binary);
     if (!file) return 0;
 
-    char magic[4];             // File signature: TRN1.
-    unsigned int levels;      // Number of stored LODs.
-    double bounds[4];         // xmin, ymin, xmax, ymax.
-    float elevationBounds[2]; // Minimum and maximum elevation.
+    char magic[4];
+    unsigned int levels;
+    double bounds[4];
+    float elevationBounds[2];
 
-    // Validate the file header.
     if (!readBytes(file, magic, 4)
         || std::string(magic, 4) != "TRN1"
         || !readUInt(file, levels)
@@ -285,7 +240,6 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
 
     if (loaderShouldStop()) return 0;
 
-    // Clamp the requested LOD to the levels available in this file.
     int selected = std::max(
         0, std::min(requestedLOD, (int)levels - 1)
     );
@@ -293,26 +247,23 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
     for (unsigned int level = 0; level < levels; ++level) {
         if (loaderShouldStop()) return 0;
 
-        unsigned int columns, rows; // Core vertex-grid dimensions.
+        unsigned int columns, rows;
 
         if (!readUInt(file, columns) || !readUInt(file, rows))
             return 0;
 
-        // Prevent unreasonable allocations from invalid file dimensions.
         if (columns < 2 || rows < 2
-            || columns > 4096 || rows > 4096)
+            || columns > 4096 || rows > 4096) {
             return 0;
+        }
 
-        // Elevations include one extra sample around every edge.
-        size_t haloCount = (size_t)(columns + 2) * (rows + 2);
+        size_t haloCount =
+            (size_t)(columns + 2) * (rows + 2);
 
-        // Stored arrays: east offsets, south offsets, halo elevations.
-        size_t bytes = (
-            (size_t)columns + rows + haloCount
-        ) * sizeof(float);
+        size_t bytes =
+            ((size_t)columns + rows + haloCount) * sizeof(float);
 
         if ((int)level != selected) {
-            // Skip levels that are not needed.
             file.seekg((std::streamoff)bytes, std::ios::cur);
             if (!file) return 0;
             continue;
@@ -322,7 +273,6 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
         std::vector<float> south(rows);
         std::vector<float> heights(haloCount);
 
-        // Read separately so cancellation can be checked between reads.
         if (!readBytes(
             file, &east[0], columns * sizeof(float)
         )) return 0;
@@ -341,8 +291,9 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
 
         if (loaderShouldStop()) return 0;
 
-        // Determine nominal sample spacing for halo normal calculations.
-        double baseSpacing = east[columns - 1] / (columns - 1);
+        double baseSpacing =
+            east[columns - 1] / (columns - 1);
+
         if (columns > 2)
             baseSpacing = east[1] - east[0];
 
@@ -351,9 +302,7 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
         Mesh* mesh = new Mesh;
         mesh->vertices.resize((size_t)columns * rows);
 
-        // Construct core vertices and their lighting normals.
         for (unsigned int r = 0; r < rows; ++r) {
-            // Delete partially built geometry when cancelling.
             if (loaderShouldStop()) {
                 delete mesh;
                 return 0;
@@ -361,26 +310,24 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
 
             for (unsigned int c = 0; c < columns; ++c) {
                 size_t index = (size_t)r * columns + c;
-                size_t h = (
-                    (size_t)(r + 1) * (columns + 2)
-                    + c + 1
-                );
+                size_t h =
+                    (size_t)(r + 1) * (columns + 2) + c + 1;
 
                 float height = heights[h];
-                Vertex& v = mesh->vertices[index];
+                Vertex& vertex = mesh->vertices[index];
 
-                v.x = east[c];
-                v.y = finiteFloat(height)
-                    ? (float)(height - originZ) : 0;
-                v.z = south[r];
+                vertex.x = east[c];
+                vertex.y = finiteFloat(height)
+                    ? (float)(height - originZ)
+                    : 0;
+                vertex.z = south[r];
 
-                // Neighboring elevation samples, including the halo.
                 float left = heights[h - 1];
                 float right = heights[h + 1];
                 float north = heights[h - (columns + 2)];
-                float southHeight = heights[h + (columns + 2)];
+                float southHeight =
+                    heights[h + (columns + 2)];
 
-                // Distance between west/east neighboring samples.
                 double dx =
                     (c == 0
                         ? baseSpacing
@@ -389,7 +336,6 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
                         ? baseSpacing
                         : east[c + 1] - east[c]);
 
-                // Distance between north/south neighboring samples.
                 double dz =
                     (r == 0
                         ? baseSpacing
@@ -398,7 +344,7 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
                         ? baseSpacing
                         : south[r + 1] - south[r]);
 
-                Vec normal(0, 1, 0); // Flat fallback.
+                Vec normal(0, 1, 0);
 
                 if (dx > 0 && dz > 0
                     && finiteFloat(left)
@@ -412,9 +358,9 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
                     ));
                 }
 
-                v.nx = (float)normal.x;
-                v.ny = (float)normal.y;
-                v.nz = (float)normal.z;
+                vertex.nx = (float)normal.x;
+                vertex.ny = (float)normal.y;
+                vertex.nz = (float)normal.z;
             }
         }
 
@@ -423,12 +369,10 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
             return 0;
         }
 
-        // Two triangles per cell, three indexes per triangle.
         mesh->indices.reserve(
             (size_t)(columns - 1) * (rows - 1) * 6
         );
 
-        // Construct triangles, excluding those with missing elevations.
         for (unsigned int r = 0; r + 1 < rows; ++r) {
             if (loaderShouldStop()) {
                 delete mesh;
@@ -436,14 +380,12 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
             }
 
             for (unsigned int c = 0; c + 1 < columns; ++c) {
-                unsigned int a = r * columns + c; // Northwest.
-                unsigned int b = a + 1;           // Northeast.
-                unsigned int d = (
-                    (r + 1) * columns + c + 1
-                );                               // Southeast.
-                unsigned int e = d - 1;           // Southwest.
+                unsigned int a = r * columns + c;
+                unsigned int b = a + 1;
+                unsigned int d =
+                    (r + 1) * columns + c + 1;
+                unsigned int e = d - 1;
 
-                // Upward-facing triangle winding.
                 unsigned int candidates[6] = {
                     a, e, b,
                     b, e, d
@@ -453,16 +395,17 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
                     bool valid = true;
 
                     for (int k = 0; k < 3; ++k) {
-                        unsigned int i = candidates[
-                            triangle * 3 + k
-                        ];
-                        unsigned int rr = i / columns;
-                        unsigned int cc = i % columns;
+                        unsigned int vertexIndex =
+                            candidates[triangle * 3 + k];
 
-                        size_t hi = (
+                        unsigned int rr =
+                            vertexIndex / columns;
+                        unsigned int cc =
+                            vertexIndex % columns;
+
+                        size_t hi =
                             (size_t)(rr + 1) * (columns + 2)
-                            + cc + 1
-                        );
+                            + cc + 1;
 
                         if (!finiteFloat(heights[hi]))
                             valid = false;
@@ -479,7 +422,6 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
             }
         }
 
-        // Avoid returning a mesh after shutdown or without valid triangles.
         if (loaderShouldStop() || mesh->indices.empty()) {
             delete mesh;
             return 0;
@@ -491,45 +433,53 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
     return 0;
 }
 
-
-// Load project placement and tile metadata from the lightweight text index.
-// Terrain geometry is not read here; it will be streamed later.
+// Read all terrain tile metadata. Geometry is loaded later.
 bool loadIndex(const std::string& folder) {
-    std::ifstream file((folder + "\\terrain_index.txt").c_str()); // Index file.
+    std::ifstream file(
+        (folder + "\\terrain_index.txt").c_str()
+    );
     if (!file) return false;
 
-    std::string magic; // First-line format identifier.
+    std::string magic;
     std::getline(file, magic);
 
-    // Accept files with either LF or CRLF line endings.
-    if (!magic.empty() && magic[magic.size()-1] == '\r')
-        magic.erase(magic.size()-1);
+    if (!magic.empty()
+        && magic[magic.size() - 1] == '\r') {
+        magic.erase(magic.size() - 1);
+    }
 
-    if (magic != "TERRAIN_INDEX_V1") return false;
+    if (magic != "TERRAIN_INDEX_V1")
+        return false;
 
-    unsigned int count; // Number of tile records.
+    unsigned int count;
 
     if (!(file >> originX >> originY >> originZ >> count)
-        || count == 0 || count > 100000)
+        || count == 0 || count > 100000) {
         return false;
+    }
 
     tiles.reserve(count);
 
     for (unsigned int i = 0; i < count; ++i) {
-        Tile tile;            // Metadata for the next tile.
-        std::string relative; // Path relative to the terrain project folder.
+        Tile tile;
+        std::string relative;
 
         if (!(file >> relative
-             >> tile.xmin >> tile.ymin >> tile.xmax >> tile.ymax
-             >> tile.zmin >> tile.zmax))
+             >> tile.xmin >> tile.ymin
+             >> tile.xmax >> tile.ymax
+             >> tile.zmin >> tile.zmax)) {
             return false;
+        }
 
-        // Convert portable index paths into Windows paths.
-        std::replace(relative.begin(), relative.end(), '/', '\\');
+        std::replace(
+            relative.begin(), relative.end(), '/', '\\'
+        );
         tile.filename = folder + "\\" + relative;
 
-        if (tile.xmax <= tile.xmin || tile.ymax <= tile.ymin)
+        if (tile.xmax <= tile.xmin
+            || tile.ymax <= tile.ymin) {
             return false;
+        }
 
         tiles.push_back(tile);
     }
@@ -537,22 +487,18 @@ bool loadIndex(const std::string& folder) {
     return true;
 }
 
-// ===========================================================================
-// Background loading and terrain cache
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// Background loading
+// ---------------------------------------------------------------------------
 
-// Background-thread entry point.
-//
-// Wait for requests, load a mesh without blocking rendering, and publish the
-// result. The tiles vector is not resized after this thread starts.
-// Background loader: cancellation is checked before and after each task.
-
-// Load terrain and its corresponding vegetation without OpenGL calls.
+// Load terrain plus any vegetation/buildings mapped to that terrain tile.
+// A missing building mapping is normal for the 100-building sample.
 DWORD WINAPI loaderMain(void*) {
     while (!loaderShouldStop()) {
         WaitForSingleObject(loaderEvent, 100);
 
-        if (loaderShouldStop()) break;
+        if (loaderShouldStop())
+            break;
 
         Request request;
         bool available = false;
@@ -567,7 +513,8 @@ DWORD WINAPI loaderMain(void*) {
 
         LeaveCriticalSection(&loaderLock);
 
-        if (!available) continue;
+        if (!available)
+            continue;
 
         Mesh* mesh = loadTerrain(
             tiles[request.tile].filename,
@@ -575,6 +522,7 @@ DWORD WINAPI loaderMain(void*) {
         );
 
         vegetation::Data* plants = 0;
+        buildings::Data* structures = 0;
 
         if (mesh && !loaderShouldStop()) {
             plants = vegetation::load(
@@ -583,9 +531,17 @@ DWORD WINAPI loaderMain(void*) {
             );
         }
 
+        if (mesh && !loaderShouldStop()) {
+            structures = buildings::load(
+                tiles[request.tile].buildingFilename,
+                loaderShouldStop
+            );
+        }
+
         if (loaderShouldStop()) {
             delete mesh;
             delete plants;
+            delete structures;
             break;
         }
 
@@ -594,6 +550,7 @@ DWORD WINAPI loaderMain(void*) {
         result.lod = request.lod;
         result.mesh = mesh;
         result.plants = plants;
+        result.structures = structures;
 
         EnterCriticalSection(&loaderLock);
         results.push_back(result);
@@ -603,27 +560,26 @@ DWORD WINAPI loaderMain(void*) {
     return 0;
 }
 
-
-
-// Horizontal distance from the camera to the nearest point of a tile.
-//
-// A camera horizontally inside a tile has distance zero, regardless of height.
-// This is used for streaming; frustum culling separately decides visibility.
+// Horizontal distance to a terrain tile's rectangular footprint.
 double tileDistance(const Tile& tile) {
-    double x0 = tile.xmin - originX; // Western boundary in viewer coordinates.
-    double x1 = tile.xmax - originX; // Eastern boundary.
-    double z0 = originY - tile.ymax; // Northern boundary.
-    double z1 = originY - tile.ymin; // Southern boundary.
+    double x0 = tile.xmin - originX;
+    double x1 = tile.xmax - originX;
+    double z0 = originY - tile.ymax;
+    double z1 = originY - tile.ymin;
 
-    double dx = std::max(x0 - camera.x, std::max(0.0, camera.x - x1));
-    double dz = std::max(z0 - camera.z, std::max(0.0, camera.z - z1));
-    // dx and dz are distances outside each horizontal interval.
+    double dx = std::max(
+        x0 - camera.x,
+        std::max(0.0, camera.x - x1)
+    );
+    double dz = std::max(
+        z0 - camera.z,
+        std::max(0.0, camera.z - z1)
+    );
 
     return std::sqrt(dx*dx + dz*dz);
 }
 
-// Resident terrain plus vegetation CPU storage.
-// Shared textures and temporary frame batches are not included.
+// Approximate CPU memory occupied by resident terrain, plants and buildings.
 size_t cacheBytes() {
     size_t bytes = 0;
 
@@ -633,29 +589,31 @@ size_t cacheBytes() {
 
         if (tiles[i].plants)
             bytes += tiles[i].plants->bytes();
+
+        if (tiles[i].structures)
+            bytes += tiles[i].structures->bytes();
     }
 
     return bytes;
 }
 
-
-// Accept completed meshes, evict distant terrain, enforce the cache budget,
-// and enqueue nearby tiles that need loading or a different detail level.
+// Take ownership of completed worker data and maintain the residency cache.
 void updateStreaming() {
-    std::vector<Result> completed; // Results owned locally by the main thread.
+    std::vector<Result> completed;
 
     EnterCriticalSection(&loaderLock);
     completed.swap(results);
     LeaveCriticalSection(&loaderLock);
 
     for (size_t i = 0; i < completed.size(); ++i) {
-        Result& result = completed[i]; // One completed background task.
-        Tile& tile = tiles[result.tile]; // Destination tile.
+        Result& result = completed[i];
+        Tile& tile = tiles[result.tile];
 
         tile.pending = false;
 
-                if (!result.mesh) {
+        if (!result.mesh) {
             delete result.plants;
+            delete result.structures;
             tile.failed = true;
             continue;
         }
@@ -663,41 +621,48 @@ void updateStreaming() {
         if (tileDistance(tile) > unloadRadius) {
             delete result.mesh;
             delete result.plants;
+            delete result.structures;
             continue;
         }
 
         delete tile.mesh;
         delete tile.plants;
+        delete tile.structures;
 
         tile.mesh = result.mesh;
         tile.plants = result.plants;
+        tile.structures = result.structures;
         tile.loadedLOD = result.lod;
-
     }
 
-    // Unload beyond the larger radius, rather than immediately at loadRadius.
-    // This avoids repeated loads when moving near a radius boundary.
+    // Evict terrain and its associated data together.
     for (size_t i = 0; i < tiles.size(); ++i) {
-        Tile& tile = tiles[i]; // Tile being considered for distance eviction.
+        Tile& tile = tiles[i];
 
-        if (tile.mesh && tileDistance(tile) > unloadRadius) {
+        if (tileDistance(tile) > unloadRadius) {
             delete tile.mesh;
+            delete tile.plants;
+            delete tile.structures;
+
             tile.mesh = 0;
+            tile.plants = 0;
+            tile.structures = 0;
             tile.loadedLOD = -1;
         }
-
     }
 
-    size_t bytes = cacheBytes(); // Current resident mesh storage.
+    size_t bytes = cacheBytes();
 
-    // If over budget, remove the most distant resident tiles first.
+    // Keep your existing cache budget, evicting farthest data first.
     while (bytes > memoryBudget) {
-        int farthest = -1;            // Selected eviction candidate.
-        double farthestDistance = -1; // Its distance from the camera.
+        int farthest = -1;
+        double farthestDistance = -1;
 
         for (size_t i = 0; i < tiles.size(); ++i) {
-            if (tiles[i].mesh) {
-                double distance = tileDistance(tiles[i]); // Candidate distance.
+            if (tiles[i].mesh
+                || tiles[i].plants
+                || tiles[i].structures) {
+                double distance = tileDistance(tiles[i]);
 
                 if (distance > farthestDistance) {
                     farthestDistance = distance;
@@ -706,30 +671,38 @@ void updateStreaming() {
             }
         }
 
-        if (farthest < 0) break;
+        if (farthest < 0)
+            break;
 
-        bytes -= tiles[farthest].mesh->bytes();
+        Tile& tile = tiles[farthest];
 
-        if (tiles[farthest].plants)
-            bytes -= tiles[farthest].plants->bytes();
+        if (tile.mesh)
+            bytes -= tile.mesh->bytes();
 
-        delete tiles[farthest].mesh;
-        delete tiles[farthest].plants;
+        if (tile.plants)
+            bytes -= tile.plants->bytes();
 
-        tiles[farthest].mesh = 0;
-        tiles[farthest].plants = 0;
-        tiles[farthest].loadedLOD = -1;
+        if (tile.structures)
+            bytes -= tile.structures->bytes();
 
+        delete tile.mesh;
+        delete tile.plants;
+        delete tile.structures;
+
+        tile.mesh = 0;
+        tile.plants = 0;
+        tile.structures = 0;
+        tile.loadedLOD = -1;
     }
 
-    int best = -1;              // Nearest tile needing a request.
-    double bestDistance = 1e100; // Best request distance found so far.
+    int best = -1;
+    double bestDistance = 1e100;
 
     for (size_t i = 0; i < tiles.size(); ++i) {
-        Tile& tile = tiles[i];              // Candidate tile.
-        double distance = tileDistance(tile); // Horizontal proximity.
+        Tile& tile = tiles[i];
+        double distance = tileDistance(tile);
 
-        int lod = lodBias; // Preset-specific starting detail.
+        int lod = lodBias;
         if (distance > 200) ++lod;
         if (distance > 450) ++lod;
         if (distance > 800) ++lod;
@@ -737,28 +710,31 @@ void updateStreaming() {
 
         tile.wantedLOD = lod;
 
-        bool needs = !tile.mesh || tile.loadedLOD != lod;
-        // A missing mesh or different desired detail requires loading.
+        bool needs =
+            !tile.mesh || tile.loadedLOD != lod;
 
-        if (distance <= loadRadius && needs
-            && !tile.pending && !tile.failed
+        if (distance <= loadRadius
+            && needs
+            && !tile.pending
+            && !tile.failed
             && distance < bestDistance) {
             bestDistance = distance;
             best = (int)i;
         }
     }
 
-    // Keep outstanding work short so old camera positions do not create a
-    // large backlog. There can be one active task and one queued task.
     EnterCriticalSection(&loaderLock);
 
-    int pendingCount = 0; // Queued plus in-progress tile requests.
+    int pendingCount = 0;
 
-    for (size_t i = 0; i < tiles.size(); ++i)
-        if (tiles[i].pending) ++pendingCount;
+    for (size_t i = 0; i < tiles.size(); ++i) {
+        if (tiles[i].pending)
+            ++pendingCount;
+    }
 
+    // Continue using the existing one-worker, short-queue approach.
     if (best >= 0 && pendingCount < 2) {
-        Request request; // New task for the background worker.
+        Request request;
         request.tile = best;
         request.lod = tiles[best].wantedLOD;
 
@@ -770,11 +746,10 @@ void updateStreaming() {
     LeaveCriticalSection(&loaderLock);
 }
 
-// ===========================================================================
-// Camera functions
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// Camera
+// ---------------------------------------------------------------------------
 
-// Convert yaw and pitch into the camera's forward direction.
 Vec forwardVector() {
     return Vec(
         std::sin(yaw) * std::cos(pitch),
@@ -783,19 +758,16 @@ Vec forwardVector() {
     );
 }
 
-// Reposition the orbit camera using target, orientation, and distance.
 void updateOrbitCamera() {
     camera = target - forwardVector() * orbitDistance;
 }
 
-// Reset to a local overview near the center of the entire project.
-// This intentionally does not attempt to show all tiles at once.
 void homeCamera() {
-    double xmin = tiles[0].xmin; // Overall minimum easting.
-    double xmax = tiles[0].xmax; // Overall maximum easting.
-    double ymin = tiles[0].ymin; // Overall minimum northing.
-    double ymax = tiles[0].ymax; // Overall maximum northing.
-    double highest = tiles[0].zmax; // Highest elevation in the project.
+    double xmin = tiles[0].xmin;
+    double xmax = tiles[0].xmax;
+    double ymin = tiles[0].ymin;
+    double ymax = tiles[0].ymax;
+    double highest = tiles[0].zmax;
 
     for (size_t i = 1; i < tiles.size(); ++i) {
         xmin = std::min(xmin, tiles[i].xmin);
@@ -806,9 +778,9 @@ void homeCamera() {
     }
 
     target = Vec(
-        (xmin+xmax)*0.5 - originX,
+        (xmin + xmax) * 0.5 - originX,
         highest - originZ,
-        originY - (ymin+ymax)*0.5
+        originY - (ymin + ymax) * 0.5
     );
 
     orbitDistance = loadRadius * 0.8;
@@ -817,34 +789,68 @@ void homeCamera() {
     updateOrbitCamera();
 }
 
-// Switch modes while keeping the current camera position and orientation.
+// Move the camera to a tile in the partial building dataset.
+void focusBuildingSample() {
+    for (size_t i = 0; i < tiles.size(); ++i) {
+        if (tiles[i].buildingFilename.empty())
+            continue;
+
+        target = Vec(
+            (tiles[i].xmin + tiles[i].xmax) * 0.5
+                - originX,
+            tiles[i].zmin - originZ + 5.0,
+            originY
+                - (tiles[i].ymin + tiles[i].ymax) * 0.5
+        );
+
+        orbitMode = true;
+        orbitDistance = 350;
+        yaw = 0;
+        pitch = -0.55;
+        updateOrbitCamera();
+        return;
+    }
+
+    MessageBoxA(
+        windowHandle,
+        "No building files match the loaded terrain tiles.",
+        "Building sample",
+        MB_OK | MB_ICONINFORMATION
+    );
+}
+
 void switchCamera() {
     if (orbitMode) {
-        // Orbit camera already has a valid position for free flight.
         orbitMode = false;
     } else {
-        // Place a new orbit target in front of the current flight camera.
-        target = camera + forwardVector() * orbitDistance;
+        target = camera
+               + forwardVector() * orbitDistance;
         orbitMode = true;
     }
 }
 
-// Apply held keyboard controls for this frame.
-// dt is elapsed frame time in seconds.
 void updateCamera(double dt) {
-    double speed = movementSpeed * dt; // Movement distance for this frame.
-    if (keys[VK_SHIFT]) speed *= 4;
+    double speed = movementSpeed * dt;
 
-    Vec forward = forwardVector(); // Current camera-forward direction.
-    Vec right(std::cos(yaw), 0, std::sin(yaw)); // Horizontal right direction.
-    Vec movement; // Combined movement requested by all held keys.
+    if (keys[VK_SHIFT])
+        speed *= 4;
 
-    if (keys['W']) movement = movement + forward * speed;
-    if (keys['S']) movement = movement - forward * speed;
-    if (keys['D']) movement = movement + right * speed;
-    if (keys['A']) movement = movement - right * speed;
-    if (keys['E']) movement.y += speed;
-    if (keys['Q']) movement.y -= speed;
+    Vec forward = forwardVector();
+    Vec right(std::cos(yaw), 0, std::sin(yaw));
+    Vec movement;
+
+    if (keys['W'])
+        movement = movement + forward * speed;
+    if (keys['S'])
+        movement = movement - forward * speed;
+    if (keys['D'])
+        movement = movement + right * speed;
+    if (keys['A'])
+        movement = movement - right * speed;
+    if (keys['E'])
+        movement.y += speed;
+    if (keys['Q'])
+        movement.y -= speed;
 
     if (orbitMode) {
         target = target + movement;
@@ -854,97 +860,105 @@ void updateCamera(double dt) {
     }
 }
 
-// ===========================================================================
+// ---------------------------------------------------------------------------
 // Frustum culling
-// ===========================================================================
+// ---------------------------------------------------------------------------
 
-// Six clipping planes: left, right, bottom, top, near, and far.
-// Each plane contains coefficients A, B, C, D for Ax + By + Cz + D = 0.
+// Camera-relative clipping planes shared with vegetation/buildings.
 double planes[6][4];
 
-// Extract the view frustum from the current OpenGL projection/view matrices.
-//
-// The view matrix contains rotation only. Terrain is rendered relative to the
-// camera, which avoids sending large map coordinates to OpenGL.
 void extractFrustum() {
-    double projection[16]; // Perspective projection matrix.
-    double view[16];       // Camera rotation matrix.
-    double clip[16];       // Combined projection * view matrix.
+    double projection[16];
+    double view[16];
+    double clip[16];
 
     glGetDoublev(GL_PROJECTION_MATRIX, projection);
     glGetDoublev(GL_MODELVIEW_MATRIX, view);
 
-    // OpenGL stores matrices in column-major order.
-    for (int column = 0; column < 4; ++column)
+    for (int column = 0; column < 4; ++column) {
         for (int row = 0; row < 4; ++row) {
-            clip[column*4+row] = 0;
+            clip[column*4 + row] = 0;
 
-            for (int k = 0; k < 4; ++k)
-                clip[column*4+row] +=
-                    projection[k*4+row] * view[column*4+k];
+            for (int k = 0; k < 4; ++k) {
+                clip[column*4 + row] +=
+                    projection[k*4 + row]
+                    * view[column*4 + k];
+            }
         }
+    }
 
     for (int p = 0; p < 6; ++p) {
-        int axis = p / 2; // X, Y, or Z clipping pair.
-        double sign = (p % 2 == 0) ? 1 : -1; // Side of that pair.
+        int axis = p / 2;
+        double sign = (p % 2 == 0) ? 1 : -1;
 
-        for (int k = 0; k < 4; ++k)
-            planes[p][k] = clip[k*4+3] + sign*clip[k*4+axis];
+        for (int k = 0; k < 4; ++k) {
+            planes[p][k] =
+                clip[k*4 + 3]
+                + sign * clip[k*4 + axis];
+        }
 
         double length = std::sqrt(
             planes[p][0]*planes[p][0]
             + planes[p][1]*planes[p][1]
             + planes[p][2]*planes[p][2]
-        ); // Plane-normal length.
+        );
 
-        if (length > 0)
+        if (length > 0) {
             for (int k = 0; k < 4; ++k)
                 planes[p][k] /= length;
+        }
     }
 }
 
-// Return false if a tile's 3D bounding box lies outside any frustum plane.
-// Intersecting boxes are retained; individual triangles are clipped by OpenGL.
 bool visible(const Tile& tile) {
-    double x0 = tile.xmin-originX-camera.x; // Camera-relative western bound.
-    double x1 = tile.xmax-originX-camera.x; // Eastern bound.
-    double y0 = tile.zmin-originZ-camera.y; // Lowest elevation.
-    double y1 = tile.zmax-originZ-camera.y; // Highest elevation.
-    double z0 = originY-tile.ymax-camera.z; // Northern bound.
-    double z1 = originY-tile.ymin-camera.z; // Southern bound.
+    double x0 = tile.xmin - originX - camera.x;
+    double x1 = tile.xmax - originX - camera.x;
+    double y0 = tile.zmin - originZ - camera.y;
+    double y1 = tile.zmax - originZ - camera.y;
+    double z0 = originY - tile.ymax - camera.z;
+    double z1 = originY - tile.ymin - camera.z;
 
     for (int p = 0; p < 6; ++p) {
-        // Choose the box corner farthest toward the plane's inward normal.
         double x = planes[p][0] >= 0 ? x1 : x0;
         double y = planes[p][1] >= 0 ? y1 : y0;
         double z = planes[p][2] >= 0 ? z1 : z0;
 
-        if (planes[p][0]*x + planes[p][1]*y
-            + planes[p][2]*z + planes[p][3] < 0)
+        if (planes[p][0]*x
+            + planes[p][1]*y
+            + planes[p][2]*z
+            + planes[p][3] < 0) {
             return false;
+        }
     }
 
     return true;
 }
 
-// ===========================================================================
-// Text and terrain rendering
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// Text overlay
+// ---------------------------------------------------------------------------
 
-// Draw a string using the bitmap-font display lists.
-// The caller establishes the screen-space projection and text color.
 void text(int x, int y, const char* value) {
     glRasterPos2i(x, y);
     glListBase(fontBase);
-    glCallLists((GLsizei)std::strlen(value), GL_UNSIGNED_BYTE, value);
+
+    glCallLists(
+        (GLsizei)std::strlen(value),
+        GL_UNSIGNED_BYTE,
+        value
+    );
 }
 
-// Draw statistics and optional help in a 2D screen-space overlay.
 void drawOverlay() {
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glLoadIdentity();
-    glOrtho(0, viewportWidth, viewportHeight, 0, -1, 1);
+
+    glOrtho(
+        0, viewportWidth,
+        viewportHeight, 0,
+        -1, 1
+    );
 
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
@@ -954,19 +968,45 @@ void drawOverlay() {
     glDisable(GL_LIGHTING);
     glColor3f(1, 1, 1);
 
-    char status[256]; // Formatted statistics line.
+    char status[256];
 
     std::sprintf(
         status,
-        "%s | %.0f FPS | %d tiles | %lu triangles | %.1f MB cache",
+        "%s | %.0f FPS | %d tiles | %lu terrain triangles | %.1f MB cache",
         orbitMode ? "Orbit" : "Flight",
-        fps, drawnTiles, drawnTriangles,
-        cacheBytes() / (1024.0*1024.0)
+        fps,
+        drawnTiles,
+        drawnTriangles,
+        cacheBytes() / (1024.0 * 1024.0)
     );
 
     text(12, 22, status);
 
+    if (helpVisible) {
+        text(
+            12, 46,
+            "Tab: camera  F1: help  F2: wireframe  F3: vegetation  F4: buildings"
+        );
+        text(
+            12, 66,
+            "WASD: move    Q/E: down/up    Shift: faster"
+        );
+        text(
+            12, 86,
+            "Flight: right-drag look; wheel changes speed"
+        );
+        text(
+            12, 106,
+            "Orbit: left-drag rotate; right-drag pan; wheel zoom"
+        );
+        text(
+            12, 126,
+            "Home: world view  F5: building sample  Esc: exit"
+        );
+    }
+
     char vegetationStatus[128];
+
     std::sprintf(
         vegetationStatus,
         "Vegetation: %s | %lu plants drawn",
@@ -975,14 +1015,18 @@ void drawOverlay() {
     );
     text(12, 150, vegetationStatus);
 
+    char buildingStatus[192];
 
-    if (helpVisible) {
-        text(12, 46, "Tab: camera mode    F1: help    F2: wireframe F3 vegetation");
-        text(12, 66, "WASD: move    Q/E: down/up    Shift: faster");
-        text(12, 86, "Flight: right-drag look; wheel changes speed");
-        text(12, 106, "Orbit: left-drag rotate; right-drag pan; wheel zoom");
-        text(12, 126, "Home: reset view    Esc: exit");
-    }
+    std::sprintf(
+        buildingStatus,
+        "Buildings: %s | %lu drawn | %lu triangles | %u indexed tiles | %ld load errors",
+        buildings::enabled ? "on" : "off",
+        buildings::drawnBuildings,
+        buildings::drawnTriangles,
+        buildings::indexedTileCount(),
+        buildings::failedLoadCount()
+    );
+    text(12, 170, buildingStatus);
 
     glEnable(GL_DEPTH_TEST);
 
@@ -992,32 +1036,40 @@ void drawOverlay() {
     glMatrixMode(GL_MODELVIEW);
 }
 
-// Render one frame: camera, lighting, visible terrain, target marker, and help.
+// ---------------------------------------------------------------------------
+// Scene rendering
+// ---------------------------------------------------------------------------
+
 void render() {
     glViewport(0, 0, viewportWidth, viewportHeight);
     glClearColor(0.25f, 0.32f, 0.40f, 1);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    glClear(
+        GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT
+    );
 
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
 
-    double nearPlane = 1.0; // Near clipping distance in metres.
-    double halfHeight = nearPlane * std::tan(60.0 * PI / 360.0);
-    // halfHeight corresponds to a 60-degree vertical field of view.
-    double halfWidth = halfHeight * viewportWidth / viewportHeight;
-    // Horizontal extent incorporates the window aspect ratio.
+    double nearPlane = 1.0;
+    double halfHeight =
+        nearPlane * std::tan(60.0 * PI / 360.0);
+    double halfWidth =
+        halfHeight * viewportWidth / viewportHeight;
 
     glFrustum(
-        -halfWidth, halfWidth, -halfHeight, halfHeight,
+        -halfWidth, halfWidth,
+        -halfHeight, halfHeight,
         nearPlane, farPlane
     );
 
-    Vec forward = unit(forwardVector()); // Camera-forward unit vector.
-    Vec right = unit(cross(forward, Vec(0, 1, 0))); // Camera-right vector.
-    Vec up = cross(right, forward); // Camera-up vector.
+    Vec forward = unit(forwardVector());
+    Vec right = unit(
+        cross(forward, Vec(0, 1, 0))
+    );
+    Vec up = cross(right, forward);
 
-    // Rotation-only camera view matrix.
-    // Translation is applied per tile using camera-relative coordinates.
+    // Rotation only; each renderer supplies camera-relative translation.
     double view[16] = {
         right.x, up.x, -forward.x, 0,
         right.y, up.y, -forward.y, 0,
@@ -1029,26 +1081,37 @@ void render() {
     glLoadMatrixd(view);
     extractFrustum();
 
-    GLfloat lightPosition[] = { -0.4f, 0.8f, 0.3f, 0 };
-    // W=0 makes this a directional light rather than a local point light.
-
-    GLfloat diffuse[] = { 0.85f, 0.85f, 0.80f, 1 };
-    // Direct sunlight color/intensity.
-
-    GLfloat ambient[] = { 0.30f, 0.30f, 0.32f, 1 };
-    // Ambient illumination keeps shaded terrain from becoming black.
+    GLfloat lightPosition[] = {
+        -0.4f, 0.8f, 0.3f, 0
+    };
+    GLfloat diffuse[] = {
+        0.85f, 0.85f, 0.80f, 1
+    };
+    GLfloat ambient[] = {
+        0.30f, 0.30f, 0.32f, 1
+    };
 
     glLightfv(GL_LIGHT0, GL_POSITION, lightPosition);
     glLightfv(GL_LIGHT0, GL_DIFFUSE, diffuse);
-    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, ambient);
+    glLightModelfv(
+        GL_LIGHT_MODEL_AMBIENT, ambient
+    );
 
     glEnable(GL_LIGHT0);
     glEnable(GL_LIGHTING);
     glEnable(GL_COLOR_MATERIAL);
-    glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+
+    glColorMaterial(
+        GL_FRONT_AND_BACK,
+        GL_AMBIENT_AND_DIFFUSE
+    );
+
     glColor3f(0.65f, 0.67f, 0.61f);
 
-    glPolygonMode(GL_FRONT_AND_BACK, wireframe ? GL_LINE : GL_FILL);
+    glPolygonMode(
+        GL_FRONT_AND_BACK,
+        wireframe ? GL_LINE : GL_FILL
+    );
 
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_NORMAL_ARRAY);
@@ -1056,51 +1119,74 @@ void render() {
     drawnTiles = 0;
     drawnTriangles = 0;
 
+    // Terrain.
     for (size_t i = 0; i < tiles.size(); ++i) {
-        Tile& tile = tiles[i]; // Candidate tile for this frame.
+        Tile& tile = tiles[i];
 
-        if (!tile.mesh || !visible(tile)) continue;
+        if (!tile.mesh || !visible(tile))
+            continue;
 
-        Mesh& mesh = *tile.mesh; // Its currently resident detail level.
+        Mesh& mesh = *tile.mesh;
 
         glPushMatrix();
 
-        // Move tile-local vertices into camera-relative viewer coordinates.
         glTranslated(
-            tile.xmin-originX-camera.x,
+            tile.xmin - originX - camera.x,
             -camera.y,
-            originY-tile.ymax-camera.z
+            originY - tile.ymax - camera.z
         );
 
-        // Interleaved CPU arrays: position and normal are in the same struct.
         glVertexPointer(
-            3, GL_FLOAT, sizeof(Vertex), &mesh.vertices[0].x
+            3, GL_FLOAT, sizeof(Vertex),
+            &mesh.vertices[0].x
         );
         glNormalPointer(
-            GL_FLOAT, sizeof(Vertex), &mesh.vertices[0].nx
+            GL_FLOAT, sizeof(Vertex),
+            &mesh.vertices[0].nx
         );
 
         glDrawElements(
-            GL_TRIANGLES, (GLsizei)mesh.indices.size(),
-            GL_UNSIGNED_INT, &mesh.indices[0]
+            GL_TRIANGLES,
+            (GLsizei)mesh.indices.size(),
+            GL_UNSIGNED_INT,
+            &mesh.indices[0]
         );
 
         glPopMatrix();
 
         ++drawnTiles;
-        drawnTriangles += (unsigned long)(mesh.indices.size()/3);
+        drawnTriangles +=
+            (unsigned long)(mesh.indices.size() / 3);
     }
 
     glDisableClientState(GL_VERTEX_ARRAY);
     glDisableClientState(GL_NORMAL_ARRAY);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
-    // Collect vegetation independently of the terrain bounding-box test:
-    // a tall tree may be visible even when the ground beneath it is not.
+    // Opaque buildings must be drawn before alpha-tested plants.
+    // Building culling uses complete building bounds, rather than merely
+    // the terrain tile's rectangular footprint.
+    buildings::beginFrame();
+
+    for (size_t i = 0; i < tiles.size(); ++i) {
+        if (!tiles[i].structures)
+            continue;
+
+        buildings::render(
+            tiles[i].structures,
+            camera.x, camera.y, camera.z,
+            originX, originY, originZ,
+            planes,
+            wireframe
+        );
+    }
+
+    // Vegetation.
     vegetation::beginFrame();
 
     for (size_t i = 0; i < tiles.size(); ++i) {
-        if (!tiles[i].plants) continue;
+        if (!tiles[i].plants)
+            continue;
 
         vegetation::collect(
             tiles[i].plants,
@@ -1114,21 +1200,30 @@ void render() {
 
     vegetation::draw();
 
-
     if (orbitMode) {
-        // Draw a small orange cross at the orbit target.
-        // Depth testing remains enabled, so terrain may obscure it.
         glDisable(GL_LIGHTING);
         glColor3f(1, 0.5f, 0.1f);
 
-        Vec p = target-camera; // Camera-relative marker position.
-        double size = std::max(1.0, orbitDistance*0.004); // Marker half-size.
+        Vec point = target - camera;
+        double size =
+            std::max(1.0, orbitDistance * 0.004);
 
         glBegin(GL_LINES);
-        glVertex3d(p.x-size, p.y, p.z);
-        glVertex3d(p.x+size, p.y, p.z);
-        glVertex3d(p.x, p.y-size, p.z);
-        glVertex3d(p.x, p.y+size, p.z);
+
+        glVertex3d(
+            point.x - size, point.y, point.z
+        );
+        glVertex3d(
+            point.x + size, point.y, point.z
+        );
+
+        glVertex3d(
+            point.x, point.y - size, point.z
+        );
+        glVertex3d(
+            point.x, point.y + size, point.z
+        );
+
         glEnd();
     }
 
@@ -1136,142 +1231,195 @@ void render() {
     SwapBuffers(deviceContext);
 }
 
-// ===========================================================================
-// Main-window input handling
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// Windows input
+// ---------------------------------------------------------------------------
 
-// Windows callback for resizing, keyboard input, mouse input, and closing.
-// hwnd: receiving window.
-// message: event identifier.
-// wParam/lParam: event-specific data supplied by Windows.
-LRESULT CALLBACK windowProc(HWND hwnd, UINT message,
-                            WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK windowProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam
+) {
     switch (message) {
     case WM_CLOSE:
-        // Let the main loop perform orderly thread/OpenGL cleanup.
         running = false;
         return 0;
 
     case WM_SIZE:
-        viewportWidth = std::max(1, (int)LOWORD(lParam));
-        viewportHeight = std::max(1, (int)HIWORD(lParam));
+        viewportWidth =
+            std::max(1, (int)LOWORD(lParam));
+        viewportHeight =
+            std::max(1, (int)HIWORD(lParam));
         return 0;
 
     case WM_KILLFOCUS:
-        // Avoid stuck movement keys after Alt-Tab or clicking another window.
-        for (int i = 0; i < 256; ++i) keys[i] = false;
-        leftDragging = rightDragging = false;
+        for (int i = 0; i < 256; ++i)
+            keys[i] = false;
+
+        leftDragging = false;
+        rightDragging = false;
         ReleaseCapture();
         return 0;
 
     case WM_KEYDOWN:
-        if (wParam < 256) keys[wParam] = true;
+        if (wParam < 256)
+            keys[wParam] = true;
 
-        // Bit 30 indicates that the key was already down.
-        // Ignore repeats for toggle actions, but retain movement-key state.
+        // Ignore repeats for actions that toggle a state.
         if (!(lParam & (1L << 30))) {
-            if (wParam == VK_ESCAPE) running = false;
-            if (wParam == VK_F1) helpVisible = !helpVisible;
-            if (wParam == VK_F2) wireframe = !wireframe;
-            if (wParam == VK_TAB) switchCamera();
-            if (wParam == VK_HOME) homeCamera();
-            if (wParam == VK_F3) vegetation::enabled = !vegetation::enabled;
+            if (wParam == VK_ESCAPE)
+                running = false;
 
+            if (wParam == VK_F1)
+                helpVisible = !helpVisible;
+
+            if (wParam == VK_F2)
+                wireframe = !wireframe;
+
+            if (wParam == VK_F3)
+                vegetation::enabled =
+                    !vegetation::enabled;
+
+            if (wParam == VK_F4)
+                buildings::enabled =
+                    !buildings::enabled;
+
+            if (wParam == VK_F5)
+                focusBuildingSample();
+
+            if (wParam == VK_TAB)
+                switchCamera();
+
+            if (wParam == VK_HOME)
+                homeCamera();
         }
+
         return 0;
 
     case WM_KEYUP:
-        if (wParam < 256) keys[wParam] = false;
+        if (wParam < 256)
+            keys[wParam] = false;
         return 0;
 
     case WM_LBUTTONDOWN:
     case WM_RBUTTONDOWN:
-        if (message == WM_LBUTTONDOWN) leftDragging = true;
-        else rightDragging = true;
+        if (message == WM_LBUTTONDOWN)
+            leftDragging = true;
+        else
+            rightDragging = true;
 
         mouseX = (short)LOWORD(lParam);
         mouseY = (short)HIWORD(lParam);
-
-        // Continue receiving drag events even outside the window.
         SetCapture(hwnd);
         return 0;
 
     case WM_LBUTTONUP:
     case WM_RBUTTONUP:
-        if (message == WM_LBUTTONUP) leftDragging = false;
-        else rightDragging = false;
+        if (message == WM_LBUTTONUP)
+            leftDragging = false;
+        else
+            rightDragging = false;
 
-        if (!leftDragging && !rightDragging) ReleaseCapture();
+        if (!leftDragging && !rightDragging)
+            ReleaseCapture();
+
         return 0;
 
     case WM_MOUSEMOVE: {
-        int x = (short)LOWORD(lParam); // New mouse X.
-        int y = (short)HIWORD(lParam); // New mouse Y.
-        int dx = x-mouseX;            // Horizontal movement since last event.
-        int dy = y-mouseY;            // Vertical movement since last event.
+        int x = (short)LOWORD(lParam);
+        int y = (short)HIWORD(lParam);
+        int dx = x - mouseX;
+        int dy = y - mouseY;
 
         mouseX = x;
         mouseY = y;
 
         if ((!orbitMode && rightDragging)
             || (orbitMode && leftDragging)) {
-            // Rotate camera orientation.
-            yaw += dx*0.005;
-            pitch -= dy*0.005;
-
-            // Prevent looking exactly vertical, where the right vector
-            // would become undefined.
-            pitch = std::max(-1.50, std::min(1.50, pitch));
+            yaw += dx * 0.005;
+            pitch -= dy * 0.005;
+            pitch = std::max(
+                -1.50,
+                std::min(1.50, pitch)
+            );
         } else if (orbitMode && rightDragging) {
-            Vec right(std::cos(yaw), 0, std::sin(yaw)); // Pan-right direction.
-            Vec up = unit(cross(right, forwardVector())); // Pan-up direction.
-            double scale = orbitDistance*0.0015; // Metres per mouse pixel.
+            Vec right(
+                std::cos(yaw), 0, std::sin(yaw)
+            );
+            Vec up = unit(
+                cross(right, forwardVector())
+            );
+            double scale =
+                orbitDistance * 0.0015;
 
-            target = target-right*(dx*scale)+up*(dy*scale);
+            target =
+                target
+                - right * (dx * scale)
+                + up * (dy * scale);
         }
 
-        if (orbitMode) updateOrbitCamera();
+        if (orbitMode)
+            updateOrbitCamera();
+
         return 0;
     }
 
     case WM_MOUSEWHEEL: {
-        double steps = (short)HIWORD(wParam)/120.0; // Signed wheel increments.
+        double steps =
+            (short)HIWORD(wParam) / 120.0;
 
         if (orbitMode) {
-            orbitDistance *= std::pow(0.85, steps);
-            orbitDistance = std::max(5.0, std::min(5000.0, orbitDistance));
+            orbitDistance *= std::pow(
+                0.85, steps
+            );
+            orbitDistance = std::max(
+                5.0,
+                std::min(5000.0, orbitDistance)
+            );
             updateOrbitCamera();
         } else {
-            movementSpeed *= std::pow(1.2, steps);
-            movementSpeed = std::max(1.0, std::min(2000.0, movementSpeed));
+            movementSpeed *= std::pow(
+                1.2, steps
+            );
+            movementSpeed = std::max(
+                1.0,
+                std::min(2000.0, movementSpeed)
+            );
         }
+
         return 0;
     }
 
     case WM_ERASEBKGND:
-        // OpenGL clears the background; Windows need not clear it separately.
         return 1;
     }
 
-    return DefWindowProcA(hwnd, message, wParam, lParam);
+    return DefWindowProcA(
+        hwnd, message, wParam, lParam
+    );
 }
 
-// ===========================================================================
+// ---------------------------------------------------------------------------
 // Startup graphics selector
-// ===========================================================================
+// ---------------------------------------------------------------------------
 
-int selectedPreset = -1; // -1: waiting; -2: cancelled; 0/1/2: Low/Medium/High.
+int selectedPreset = -1;
 
-// Handle button presses and closing of the startup selector.
-LRESULT CALLBACK launcherProc(HWND hwnd, UINT message,
-                              WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK launcherProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam
+) {
     if (message == WM_COMMAND) {
-        int id = LOWORD(wParam); // Identifier of the clicked control.
+        int id = LOWORD(wParam);
 
         if (id >= 101 && id <= 103) {
-            selectedPreset = id-101;
+            selectedPreset = id - 101;
             DestroyWindow(hwnd);
         }
+
         return 0;
     }
 
@@ -1281,51 +1429,68 @@ LRESULT CALLBACK launcherProc(HWND hwnd, UINT message,
         return 0;
     }
 
-    return DefWindowProcA(hwnd, message, wParam, lParam);
+    return DefWindowProcA(
+        hwnd, message, wParam, lParam
+    );
 }
 
-// Create a small native Windows graphics-preset dialog.
-// Return 0, 1, or 2; return a negative value if cancelled or creation fails.
 int choosePreset(HINSTANCE instance) {
-    WNDCLASSA wc; // Window-class description for the launcher.
+    WNDCLASSA wc;
     ZeroMemory(&wc, sizeof(wc));
 
     wc.lpfnWndProc = launcherProc;
     wc.hInstance = instance;
     wc.lpszClassName = "TerrainLauncher";
     wc.hCursor = LoadCursor(0, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE+1);
+    wc.hbrBackground =
+        (HBRUSH)(COLOR_BTNFACE + 1);
+
     RegisterClassA(&wc);
 
     HWND launcher = CreateWindowA(
-        wc.lpszClassName, "Terrain viewer - graphics",
+        wc.lpszClassName,
+        "Terrain viewer - graphics",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-        CW_USEDEFAULT, CW_USEDEFAULT, 470, 180,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        470, 180,
         0, 0, instance, 0
-    ); // Startup selector window.
-
-    if (!launcher) return -2;
-
-    CreateWindowA(
-        "STATIC", "Choose a preset. Start with Low on older hardware.",
-        WS_CHILD | WS_VISIBLE,
-        20, 20, 420, 25, launcher, 0, instance, 0
     );
 
-    const char* labels[] = { "Low", "Medium", "High" }; // Button captions.
+    if (!launcher)
+        return -2;
 
-    for (int i = 0; i < 3; ++i)
+    CreateWindowA(
+        "STATIC",
+        "Choose a preset. Start with Low on older hardware.",
+        WS_CHILD | WS_VISIBLE,
+        20, 20, 420, 25,
+        launcher, 0, instance, 0
+    );
+
+    const char* labels[] = {
+        "Low", "Medium", "High"
+    };
+
+    for (int i = 0; i < 3; ++i) {
         CreateWindowA(
-            "BUTTON", labels[i], WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            20+i*145, 65, 130, 35,
-            launcher, (HMENU)(INT_PTR)(101+i), instance, 0
+            "BUTTON",
+            labels[i],
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            20 + i * 145, 65,
+            130, 35,
+            launcher,
+            (HMENU)(INT_PTR)(101 + i),
+            instance,
+            0
         );
+    }
 
     ShowWindow(launcher, SW_SHOW);
 
-    MSG message; // Windows event received while waiting for a selection.
+    MSG message;
 
-    while (selectedPreset == -1 && GetMessage(&message, 0, 0, 0) > 0) {
+    while (selectedPreset == -1
+           && GetMessage(&message, 0, 0, 0) > 0) {
         TranslateMessage(&message);
         DispatchMessage(&message);
     }
@@ -1333,134 +1498,165 @@ int choosePreset(HINSTANCE instance) {
     return selectedPreset;
 }
 
-// ===========================================================================
+// ---------------------------------------------------------------------------
 // OpenGL initialization
-// ===========================================================================
+// ---------------------------------------------------------------------------
 
-// Create the main window, choose its pixel format, create the OpenGL context,
-// and build a bitmap font. All OpenGL work stays on the main thread.
 bool initializeOpenGL(HINSTANCE instance) {
-    WNDCLASSA wc; // Main-window class definition.
+    WNDCLASSA wc;
     ZeroMemory(&wc, sizeof(wc));
 
-    // CS_OWNDC gives this window a stable drawing-device context.
     wc.style = CS_OWNDC;
     wc.lpfnWndProc = windowProc;
     wc.hInstance = instance;
     wc.lpszClassName = "LegacyTerrainViewer";
     wc.hCursor = LoadCursor(0, IDC_ARROW);
 
-    if (!RegisterClassA(&wc)) return false;
+    if (!RegisterClassA(&wc))
+        return false;
 
     windowHandle = CreateWindowA(
-        wc.lpszClassName, "Terrain viewer",
+        wc.lpszClassName,
+        "Terrain viewer",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT,
         viewportWidth, viewportHeight,
         0, 0, instance, 0
     );
 
-    if (!windowHandle) return false;
+    if (!windowHandle)
+        return false;
 
     deviceContext = GetDC(windowHandle);
 
-    PIXELFORMATDESCRIPTOR format; // Requested framebuffer configuration.
+    PIXELFORMATDESCRIPTOR format;
     ZeroMemory(&format, sizeof(format));
 
     format.nSize = sizeof(format);
     format.nVersion = 1;
-    format.dwFlags = PFD_DRAW_TO_WINDOW
-                   | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+    format.dwFlags =
+        PFD_DRAW_TO_WINDOW
+        | PFD_SUPPORT_OPENGL
+        | PFD_DOUBLEBUFFER;
     format.iPixelType = PFD_TYPE_RGBA;
     format.cColorBits = 24;
     format.cDepthBits = 24;
     format.iLayerType = PFD_MAIN_PLANE;
 
-    int selected = ChoosePixelFormat(deviceContext, &format);
-    // selected identifies the closest supported framebuffer format.
+    int selected =
+        ChoosePixelFormat(deviceContext, &format);
 
-    if (!selected || !SetPixelFormat(deviceContext, selected, &format))
+    if (!selected
+        || !SetPixelFormat(
+            deviceContext, selected, &format
+        )) {
         return false;
+    }
 
-    renderingContext = wglCreateContext(deviceContext);
+    renderingContext =
+        wglCreateContext(deviceContext);
 
     if (!renderingContext
-        || !wglMakeCurrent(deviceContext, renderingContext))
+        || !wglMakeCurrent(
+            deviceContext, renderingContext
+        )) {
         return false;
+    }
 
-    glEnable(GL_DEPTH_TEST); // Hide terrain behind nearer terrain.
-    glEnable(GL_CULL_FACE);  // Skip back-facing triangles.
-    glEnable(GL_NORMALIZE);  // Ensure lighting normals remain unit length.
-    glShadeModel(GL_SMOOTH); // Interpolate lighting across triangle vertices.
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
+    glEnable(GL_NORMALIZE);
+    glShadeModel(GL_SMOOTH);
 
-    // Build one bitmap display list for each byte-sized character.
     fontBase = glGenLists(256);
 
     HFONT font = CreateFontA(
-        -15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-        ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        DEFAULT_QUALITY, FIXED_PITCH, "Courier New"
-    ); // Temporary Windows font used to generate OpenGL glyphs.
+        -15, 0, 0, 0,
+        FW_NORMAL,
+        FALSE, FALSE, FALSE,
+        ANSI_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        DEFAULT_QUALITY,
+        FIXED_PITCH,
+        "Courier New"
+    );
 
-    HGDIOBJ oldFont = SelectObject(deviceContext, font);
-    // Preserve the device context's previous font.
+    HGDIOBJ oldFont =
+        SelectObject(deviceContext, font);
 
-    BOOL fontOK = wglUseFontBitmapsA(deviceContext, 0, 256, fontBase);
-    // Indicates whether glyph display-list generation succeeded.
+    BOOL fontOK = wglUseFontBitmapsA(
+        deviceContext, 0, 256, fontBase
+    );
 
     SelectObject(deviceContext, oldFont);
     DeleteObject(font);
 
-    if (!fontOK) return false;
+    if (!fontOK)
+        return false;
 
     ShowWindow(windowHandle, SW_SHOW);
     return true;
 }
 
-// ===========================================================================
+// ---------------------------------------------------------------------------
 // Application entry point
-// ===========================================================================
+// ---------------------------------------------------------------------------
 
-// Windows GUI entry point.
-//
-// instance: executable module handle.
-// commandLine: arguments after the executable name.
-// The unnamed parameters are unused previous-instance and show-state values.
-int WINAPI WinMain(HINSTANCE instance, HINSTANCE,
-                   LPSTR commandLine, int) {
-    // Accept one terrain-folder argument, optionally enclosed in quotes.
+int WINAPI WinMain(
+    HINSTANCE instance,
+    HINSTANCE,
+    LPSTR commandLine,
+    int
+) {
+    // Existing terrain-folder command-line behavior is unchanged.
     terrainFolder = commandLine;
 
-    while (!terrainFolder.empty() && terrainFolder[0] == ' ')
+    while (!terrainFolder.empty()
+           && terrainFolder[0] == ' ') {
         terrainFolder.erase(0, 1);
+    }
 
     while (!terrainFolder.empty()
-           && terrainFolder[terrainFolder.size()-1] == ' ')
-        terrainFolder.erase(terrainFolder.size()-1);
+           && terrainFolder[
+               terrainFolder.size() - 1
+           ] == ' ') {
+        terrainFolder.erase(
+            terrainFolder.size() - 1
+        );
+    }
 
     if (terrainFolder.size() >= 2
         && terrainFolder[0] == '"'
-        && terrainFolder[terrainFolder.size()-1] == '"')
-        terrainFolder = terrainFolder.substr(1, terrainFolder.size()-2);
+        && terrainFolder[
+            terrainFolder.size() - 1
+        ] == '"') {
+        terrainFolder = terrainFolder.substr(
+            1, terrainFolder.size() - 2
+        );
+    }
 
-    // With no argument, look for a terrain folder in the working directory.
-    if (terrainFolder.empty()) terrainFolder = tilesLocation;
+    if (terrainFolder.empty())
+        terrainFolder = tilesLocation;
 
     if (!loadIndex(terrainFolder)) {
         MessageBoxA(
             0,
             "Cannot read terrain_index.txt.\n\n"
-            "Launch with the prepared terrain folder as an argument.",
-            "Terrain viewer", MB_OK | MB_ICONERROR
+            "Launch with the prepared terrain folder "
+            "as an argument.",
+            "Terrain viewer",
+            MB_OK | MB_ICONERROR
         );
         return 1;
     }
 
-    int preset = choosePreset(instance); // User's selected graphics level.
-    if (preset < 0) return 0;
+    int preset = choosePreset(instance);
 
-    // Presets adjust horizontal streaming range, visible range, CPU cache,
-    // and minimum detail. These are starting values, not hardware detection.
+    if (preset < 0)
+        return 0;
+
+    // YOUR EXISTING GRAPHICS PRESET VALUES: unchanged.
     if (preset == 0) {
         loadRadius = 800;
         unloadRadius = 1100;
@@ -1483,13 +1679,15 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE,
 
     if (!initializeOpenGL(instance)) {
         MessageBoxA(
-            0, "OpenGL initialization failed.",
-            "Terrain viewer", MB_OK | MB_ICONERROR
+            0,
+            "OpenGL initialization failed.",
+            "Terrain viewer",
+            MB_OK | MB_ICONERROR
         );
         return 1;
     }
 
-    // Textures must be created on the main thread with a current GL context.
+    // Textures must be created while the OpenGL context is current.
     vegetation::setPreset(preset);
 
     std::string vegetationError;
@@ -1505,67 +1703,137 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE,
             MB_OK | MB_ICONWARNING
         );
 
-        // Terrain can still run without vegetation.
         vegetation::enabled = false;
     }
 
-    // Match by original terrain basename, not position in the tile vector.
     for (size_t i = 0; i < tiles.size(); ++i) {
         tiles[i].vegetationFilename =
-            vegetation::filenameForTerrain(tiles[i].filename);
+            vegetation::filenameForTerrain(
+                tiles[i].filename
+            );
     }
 
+    // Initialize shared building materials and optional tile mappings.
+    buildings::setPreset(preset);
 
-    // Initialize synchronization before starting the worker.
+    std::string buildingError;
+
+    if (!buildings::initialize(
+        buildingsLocation,
+        buildingError
+    )) {
+        MessageBoxA(
+            windowHandle,
+            buildingError.c_str(),
+            "Building initialization failed",
+            MB_OK | MB_ICONWARNING
+        );
+
+        // Terrain and vegetation still work if buildings cannot load.
+        buildings::enabled = false;
+    }
+
+    unsigned int matchedBuildingTiles = 0;
+
+    for (size_t i = 0; i < tiles.size(); ++i) {
+        tiles[i].buildingFilename =
+            buildings::filenameForTerrain(
+                tiles[i].filename
+            );
+
+        if (!tiles[i].buildingFilename.empty())
+            ++matchedBuildingTiles;
+    }
+
+    if (buildings::indexedTileCount() > 0
+        && matchedBuildingTiles == 0) {
+        MessageBoxA(
+            windowHandle,
+            "Building files were indexed, but none matched "
+            "terrain filenames.\n"
+            "Check that the buildings were generated "
+            "for this terrain dataset.",
+            "Building tile mapping",
+            MB_OK | MB_ICONWARNING
+        );
+    }
+
+    // Start the worker only after the indexes and textures are ready.
     InitializeCriticalSection(&loaderLock);
-    loaderEvent = CreateEventA(0, FALSE, FALSE, 0);
 
-    if (loaderEvent)
-        loaderThread = CreateThread(0, 0, loaderMain, 0, 0, 0);
+    loaderEvent = CreateEventA(
+        0, FALSE, FALSE, 0
+    );
+
+    if (loaderEvent) {
+        loaderThread = CreateThread(
+            0, 0, loaderMain, 0, 0, 0
+        );
+    }
 
     if (!loaderEvent || !loaderThread) {
         MessageBoxA(
-            0, "Cannot start the background loader.",
-            "Terrain viewer", MB_OK | MB_ICONERROR
+            0,
+            "Cannot start the background loader.",
+            "Terrain viewer",
+            MB_OK | MB_ICONERROR
         );
 
-        if (loaderEvent) CloseHandle(loaderEvent);
+        if (loaderEvent)
+            CloseHandle(loaderEvent);
+
         DeleteCriticalSection(&loaderLock);
+
+        buildings::shutdown();
+        vegetation::shutdown();
+
+        if (fontBase)
+            glDeleteLists(fontBase, 256);
+
+        wglMakeCurrent(0, 0);
+        wglDeleteContext(renderingContext);
+        ReleaseDC(windowHandle, deviceContext);
+        DestroyWindow(windowHandle);
+
         return 1;
     }
 
     homeCamera();
 
-    LARGE_INTEGER frequency; // High-resolution timer ticks per second.
-    LARGE_INTEGER previous;  // Time of the previous frame.
-    LARGE_INTEGER now;       // Current frame timestamp.
+    LARGE_INTEGER frequency;
+    LARGE_INTEGER previous;
+    LARGE_INTEGER now;
 
     QueryPerformanceFrequency(&frequency);
     QueryPerformanceCounter(&previous);
 
-    double fpsTime = 0; // Accumulated time for the FPS display.
-    int fpsFrames = 0; // Frames accumulated during that interval.
+    double fpsTime = 0;
+    int fpsFrames = 0;
 
     while (running) {
-        MSG message; // Next queued Windows event.
+        MSG message;
 
-        // Process all currently queued input/window events without blocking.
-        while (PeekMessage(&message, 0, 0, 0, PM_REMOVE)) {
-            if (message.message == WM_QUIT) running = false;
+        while (PeekMessage(
+            &message, 0, 0, 0, PM_REMOVE
+        )) {
+            if (message.message == WM_QUIT)
+                running = false;
+
             TranslateMessage(&message);
             DispatchMessage(&message);
         }
 
-        if (!running) break;
+        if (!running)
+            break;
 
         QueryPerformanceCounter(&now);
 
-        double dt = (double)(now.QuadPart-previous.QuadPart)
-                  / frequency.QuadPart; // Frame duration in seconds.
+        double dt =
+            (double)(
+                now.QuadPart - previous.QuadPart
+            ) / frequency.QuadPart;
 
         previous = now;
-
-        // Prevent huge camera jumps after a long stall or debugger pause.
         dt = std::min(dt, 0.1);
 
         updateCamera(dt);
@@ -1576,16 +1844,15 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE,
         ++fpsFrames;
 
         if (fpsTime >= 0.5) {
-            fps = fpsFrames/fpsTime;
+            fps = fpsFrames / fpsTime;
             fpsTime = 0;
             fpsFrames = 0;
         }
 
-        // Yield CPU time to Windows and the background loader.
         Sleep(1);
     }
 
-    // Request cooperative cancellation and wake the worker.
+    // Cooperatively stop the background loader.
     InterlockedExchange(&loaderStop, 1);
 
     EnterCriticalSection(&loaderLock);
@@ -1594,8 +1861,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE,
 
     SetEvent(loaderEvent);
 
-    // Wait for the worker, but continue servicing Windows messages.
-    // Do not free shared data until the worker has actually exited.
+    // Keep servicing Windows messages until the loader has really stopped.
     for (;;) {
         DWORD waitResult = MsgWaitForMultipleObjects(
             1,
@@ -1606,55 +1872,55 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE,
         );
 
         if (waitResult == WAIT_OBJECT_0) {
-            // Worker has exited; normal cleanup can safely continue.
             break;
         }
 
         if (waitResult == WAIT_OBJECT_0 + 1) {
             MSG message;
 
-            while (PeekMessage(&message, 0, 0, 0, PM_REMOVE)) {
-                // Ignore quit messages here; shutdown is already underway.
+            while (PeekMessage(
+                &message, 0, 0, 0, PM_REMOVE
+            )) {
                 if (message.message != WM_QUIT) {
                     TranslateMessage(&message);
                     DispatchMessage(&message);
                 }
             }
         } else {
-            // An unexpected wait failure means safe cleanup cannot be
-            // guaranteed. End the process instead of freeing live data.
+            // Do not free objects that a live worker may still access.
             ExitProcess(1);
         }
     }
 
-
     CloseHandle(loaderThread);
     CloseHandle(loaderEvent);
 
-    // Free completed results that were never adopted into the tile cache.
-        for (size_t i = 0; i < results.size(); ++i) {
+    // Release any results that the main thread had not yet adopted.
+    for (size_t i = 0; i < results.size(); ++i) {
         delete results[i].mesh;
         delete results[i].plants;
+        delete results[i].structures;
     }
 
+    // Release all resident tile data.
     for (size_t i = 0; i < tiles.size(); ++i) {
         delete tiles[i].mesh;
         delete tiles[i].plants;
+        delete tiles[i].structures;
     }
-
 
     DeleteCriticalSection(&loaderLock);
 
-    // Delete OpenGL resources while the context is still current.
-    if (fontBase) glDeleteLists(fontBase, 256);
+    // Release OpenGL resources while the context still exists.
+    if (fontBase)
+        glDeleteLists(fontBase, 256);
 
-
-    // Delete shared vegetation textures before releasing OpenGL.
     vegetation::shutdown();
+    buildings::shutdown();
 
-    // Release the context and the Windows drawing resources.
     wglMakeCurrent(0, 0);
     wglDeleteContext(renderingContext);
+
     ReleaseDC(windowHandle, deviceContext);
     DestroyWindow(windowHandle);
 
