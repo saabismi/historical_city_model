@@ -1,0 +1,16 @@
+BUILDING_INDEX_V1
+7
+tile_000322.trn
+tiles/tile_000322.bld
+tile_000323.trn
+tiles/tile_000323.bld
+tile_000394.trn
+tiles/tile_000394.bld
+tile_000395.trn
+tiles/tile_000395.bld
+tile_000465.trn
+tiles/tile_000465.bld
+tile_000466.trn
+tiles/tile_000466.bld
+tile_000467.trn
+tiles/tile_000467.bld

@@ -1,0 +1,882 @@
+{
+  "format": "building_manifest_v1",
+  "crs": "EPSG:3067",
+  "terrain_origin": [
+    365000.0,
+    6680999.991,
+    -4.0
+  ],
+  "config": {
+    "roof_class": 6,
+    "ground_class": 2,
+    "minimum_roof_points": 20,
+    "maximum_fit_points": 4000,
+    "robust_scale": 0.35,
+    "flat_max_slope_degrees": 5.0,
+    "flat_error_allowance_metres": 0.08,
+    "gable_min_slope_degrees": 8.0,
+    "gable_max_slope_degrees": 65.0,
+    "gable_min_points_per_side": 8,
+    "gable_min_fraction_per_side": 0.15,
+    "gable_min_rise_metres": 0.6,
+    "gable_min_relative_improvement": 0.2,
+    "gable_min_absolute_improvement_metres": 0.12,
+    "gable_max_error_metres": 0.9,
+    "uncertain_error_metres": 0.9,
+    "ground_neighbors": 24,
+    "ground_max_distance_metres": 60.0,
+    "wall_below_ground_metres": 0.5,
+    "gable_overhang_metres": 0.3,
+    "ridge_angle_samples": 16,
+    "ridge_start_positions": [
+      -0.2,
+      0.0,
+      0.2
+    ],
+    "seed": 12345
+  },
+  "tiles": [
+    {
+      "terrain_file": "tiles/tile_000322.trn",
+      "building_file": "tiles/tile_000322.bld",
+      "glb_file": "glb/tile_000322.glb",
+      "glb_origin_easting_northing_elevation": [
+        373500.0,
+        6679999.991,
+        0
+      ],
+      "buildings": [
+        {
+          "id": "building_000001",
+          "anchor_easting_northing_elevation": [
+            373575.57485319336,
+            6679962.3395,
+            28.675
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000004",
+          "anchor_easting_northing_elevation": [
+            373714.1544683429,
+            6679961.2575,
+            21.245
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000005",
+          "anchor_easting_northing_elevation": [
+            373656.78596551577,
+            6679957.012,
+            28.095
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000007",
+          "anchor_easting_northing_elevation": [
+            373662.1691865745,
+            6679863.6825,
+            27.475
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000008",
+          "anchor_easting_northing_elevation": [
+            373723.874,
+            6679873.472,
+            23.94
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000010",
+          "anchor_easting_northing_elevation": [
+            373632.99538845255,
+            6679938.877,
+            31.035
+          ],
+          "roof_type": "shed",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000012",
+          "anchor_easting_northing_elevation": [
+            373622.8740000001,
+            6679874.0045,
+            28.8
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000013",
+          "anchor_easting_northing_elevation": [
+            373605.2588627407,
+            6679896.9,
+            29.265
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000016",
+          "anchor_easting_northing_elevation": [
+            373742.30924543063,
+            6679930.633,
+            21.55
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000017",
+          "anchor_easting_northing_elevation": [
+            373696.684,
+            6679922.618,
+            21.330000000000002
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000023",
+          "anchor_easting_northing_elevation": [
+            373747.3679578526,
+            6679854.4745000005,
+            29.045
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000025",
+          "anchor_easting_northing_elevation": [
+            373748.52205804974,
+            6679794.1655,
+            29.18
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000026",
+          "anchor_easting_northing_elevation": [
+            373727.18572996324,
+            6679777.949,
+            28.41
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000027",
+          "anchor_easting_northing_elevation": [
+            373642.61876531824,
+            6679849.6775,
+            27.95
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000030",
+          "anchor_easting_northing_elevation": [
+            373607.4049822553,
+            6679821.986500001,
+            28.44
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000032",
+          "anchor_easting_northing_elevation": [
+            373510.1648840883,
+            6679809.067,
+            31.265
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000033",
+          "anchor_easting_northing_elevation": [
+            373534.5109207043,
+            6679904.5705,
+            30.265
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000034",
+          "anchor_easting_northing_elevation": [
+            373555.00585133635,
+            6679867.4355,
+            30.475
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000035",
+          "anchor_easting_northing_elevation": [
+            373544.152140819,
+            6679939.83,
+            29.675
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000038",
+          "anchor_easting_northing_elevation": [
+            373588.37085403956,
+            6679886.298,
+            29.200000000000003
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000041",
+          "anchor_easting_northing_elevation": [
+            373536.35214572353,
+            6679848.373,
+            30.465000000000003
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000042",
+          "anchor_easting_northing_elevation": [
+            373518.9637385714,
+            6679821.8875,
+            31.095
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000043",
+          "anchor_easting_northing_elevation": [
+            373575.123125928,
+            6679828.012,
+            29.259999999999998
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000045",
+          "anchor_easting_northing_elevation": [
+            373626.3544276961,
+            6679769.0875,
+            28.990000000000002
+          ],
+          "roof_type": "flat",
+          "status": "uncertain"
+        }
+      ]
+    },
+    {
+      "terrain_file": "tiles/tile_000323.trn",
+      "building_file": "tiles/tile_000323.bld",
+      "glb_file": "glb/tile_000323.glb",
+      "glb_origin_easting_northing_elevation": [
+        373750.0,
+        6679999.991,
+        0
+      ],
+      "buildings": [
+        {
+          "id": "building_000009",
+          "anchor_easting_northing_elevation": [
+            373780.3767445646,
+            6679850.7155,
+            29.095
+          ],
+          "roof_type": "shed",
+          "status": "uncertain"
+        },
+        {
+          "id": "building_000015",
+          "anchor_easting_northing_elevation": [
+            373772.4981033114,
+            6679908.0505,
+            29.165
+          ],
+          "roof_type": "shed",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000018",
+          "anchor_easting_northing_elevation": [
+            373753.4111700965,
+            6679878.066,
+            28.700000000000003
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        }
+      ]
+    },
+    {
+      "terrain_file": "tiles/tile_000394.trn",
+      "building_file": "tiles/tile_000394.bld",
+      "glb_file": "glb/tile_000394.glb",
+      "glb_origin_easting_northing_elevation": [
+        373500.0,
+        6679749.991,
+        0
+      ],
+      "buildings": [
+        {
+          "id": "building_000044",
+          "anchor_easting_northing_elevation": [
+            373707.1474887327,
+            6679600.047499999,
+            22.295
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000046",
+          "anchor_easting_northing_elevation": [
+            373678.15875673626,
+            6679688.381999999,
+            25.18
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000047",
+          "anchor_easting_northing_elevation": [
+            373644.0585183848,
+            6679696.0254999995,
+            26.48
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000050",
+          "anchor_easting_northing_elevation": [
+            373715.8005201176,
+            6679703.0785,
+            24.925
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000051",
+          "anchor_easting_northing_elevation": [
+            373708.66858264944,
+            6679714.4495,
+            25.03
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000052",
+          "anchor_easting_northing_elevation": [
+            373724.8539860453,
+            6679725.02,
+            25.225
+          ],
+          "roof_type": "shed",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000055",
+          "anchor_easting_northing_elevation": [
+            373712.7310105261,
+            6679652.304500001,
+            23.87
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000057",
+          "anchor_easting_northing_elevation": [
+            373624.2682437701,
+            6679664.712,
+            25.65
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000058",
+          "anchor_easting_northing_elevation": [
+            373665.2622172879,
+            6679652.908,
+            24.395000000000003
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000059",
+          "anchor_easting_northing_elevation": [
+            373648.23400009004,
+            6679621.0975,
+            22.37
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000060",
+          "anchor_easting_northing_elevation": [
+            373642.51157548977,
+            6679507.713500001,
+            21.625
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000061",
+          "anchor_easting_northing_elevation": [
+            373741.1345100921,
+            6679504.111,
+            22.0
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000062",
+          "anchor_easting_northing_elevation": [
+            373646.06637254887,
+            6679530.000499999,
+            21.545
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000063",
+          "anchor_easting_northing_elevation": [
+            373608.7745953522,
+            6679562.8475,
+            22.939999999999998
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000064",
+          "anchor_easting_northing_elevation": [
+            373647.2912476626,
+            6679598.801,
+            22.005000000000003
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000065",
+          "anchor_easting_northing_elevation": [
+            373667.2314857943,
+            6679535.921499999,
+            21.490000000000002
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000066",
+          "anchor_easting_northing_elevation": [
+            373655.8769653442,
+            6679545.464,
+            21.585
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000068",
+          "anchor_easting_northing_elevation": [
+            373658.8188385612,
+            6679516.884,
+            21.405
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000069",
+          "anchor_easting_northing_elevation": [
+            373601.77766303957,
+            6679534.9065000005,
+            22.995
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000072",
+          "anchor_easting_northing_elevation": [
+            373699.3437120308,
+            6679525.5385,
+            21.645000000000003
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000073",
+          "anchor_easting_northing_elevation": [
+            373709.8175756643,
+            6679509.682,
+            21.515
+          ],
+          "roof_type": "shed",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000091",
+          "anchor_easting_northing_elevation": [
+            373577.9062674978,
+            6679501.300000001,
+            26.445
+          ],
+          "roof_type": "shed",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000092",
+          "anchor_easting_northing_elevation": [
+            373572.6484084798,
+            6679561.048,
+            27.365000000000002
+          ],
+          "roof_type": "shed",
+          "status": "accepted"
+        }
+      ]
+    },
+    {
+      "terrain_file": "tiles/tile_000395.trn",
+      "building_file": "tiles/tile_000395.bld",
+      "glb_file": "glb/tile_000395.glb",
+      "glb_origin_easting_northing_elevation": [
+        373750.0,
+        6679749.991,
+        0
+      ],
+      "buildings": [
+        {
+          "id": "building_000048",
+          "anchor_easting_northing_elevation": [
+            373762.52069452277,
+            6679699.9435,
+            24.005000000000003
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000049",
+          "anchor_easting_northing_elevation": [
+            373763.7843373042,
+            6679725.525,
+            25.810000000000002
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000053",
+          "anchor_easting_northing_elevation": [
+            373754.9196966016,
+            6679618.7575,
+            22.5
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000054",
+          "anchor_easting_northing_elevation": [
+            373760.026694868,
+            6679648.473999999,
+            23.005000000000003
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000056",
+          "anchor_easting_northing_elevation": [
+            373761.38449168834,
+            6679674.4315,
+            23.465
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000071",
+          "anchor_easting_northing_elevation": [
+            373752.3229815257,
+            6679559.6025,
+            22.445
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        }
+      ]
+    },
+    {
+      "terrain_file": "tiles/tile_000465.trn",
+      "building_file": "tiles/tile_000465.bld",
+      "glb_file": "glb/tile_000465.glb",
+      "glb_origin_easting_northing_elevation": [
+        373250.0,
+        6679499.991,
+        0
+      ],
+      "buildings": [
+        {
+          "id": "building_000095",
+          "anchor_easting_northing_elevation": [
+            373474.3058195266,
+            6679477.216,
+            32.0745
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000098",
+          "anchor_easting_northing_elevation": [
+            373395.7817760555,
+            6679492.732,
+            38.785
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000099",
+          "anchor_easting_northing_elevation": [
+            373387.0044999999,
+            6679461.661499999,
+            37.72
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000100",
+          "anchor_easting_northing_elevation": [
+            373356.25522605574,
+            6679466.3774999995,
+            37.72
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        }
+      ]
+    },
+    {
+      "terrain_file": "tiles/tile_000466.trn",
+      "building_file": "tiles/tile_000466.bld",
+      "glb_file": "glb/tile_000466.glb",
+      "glb_origin_easting_northing_elevation": [
+        373500.0,
+        6679499.991,
+        0
+      ],
+      "buildings": [
+        {
+          "id": "building_000074",
+          "anchor_easting_northing_elevation": [
+            373705.69590645435,
+            6679446.830499999,
+            21.27
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000075",
+          "anchor_easting_northing_elevation": [
+            373746.50946534367,
+            6679430.535,
+            22.225
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000076",
+          "anchor_easting_northing_elevation": [
+            373730.1105775544,
+            6679472.285499999,
+            21.245
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000077",
+          "anchor_easting_northing_elevation": [
+            373724.6051207068,
+            6679491.502,
+            21.395000000000003
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000082",
+          "anchor_easting_northing_elevation": [
+            373721.9377016278,
+            6679439.6755,
+            21.32
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000083",
+          "anchor_easting_northing_elevation": [
+            373643.3406984814,
+            6679483.876499999,
+            21.935000000000002
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000084",
+          "anchor_easting_northing_elevation": [
+            373642.8870238148,
+            6679460.296,
+            22.07
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000085",
+          "anchor_easting_northing_elevation": [
+            373627.3728492098,
+            6679470.477,
+            22.155
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000087",
+          "anchor_easting_northing_elevation": [
+            373662.39749999996,
+            6679473.3895,
+            21.485
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000088",
+          "anchor_easting_northing_elevation": [
+            373661.66792643245,
+            6679440.426,
+            21.32
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000089",
+          "anchor_easting_northing_elevation": [
+            373681.41319017124,
+            6679454.165,
+            21.22
+          ],
+          "roof_type": "shed",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000090",
+          "anchor_easting_northing_elevation": [
+            373633.4236475082,
+            6679441.8875,
+            22.155
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000093",
+          "anchor_easting_northing_elevation": [
+            373548.81891782576,
+            6679460.756,
+            28.1
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        }
+      ]
+    },
+    {
+      "terrain_file": "tiles/tile_000467.trn",
+      "building_file": "tiles/tile_000467.bld",
+      "glb_file": "glb/tile_000467.glb",
+      "glb_origin_easting_northing_elevation": [
+        373750.0,
+        6679499.991,
+        0
+      ],
+      "buildings": [
+        {
+          "id": "building_000078",
+          "anchor_easting_northing_elevation": [
+            373771.4238312684,
+            6679483.271,
+            24.345
+          ],
+          "roof_type": "flat",
+          "status": "accepted"
+        },
+        {
+          "id": "building_000080",
+          "anchor_easting_northing_elevation": [
+            373770.5969774225,
+            6679414.8665,
+            24.445
+          ],
+          "roof_type": "gable",
+          "status": "accepted"
+        }
+      ]
+    }
+  ],
+  "notes": [
+    "Fits original prepared points; Roofer geometry is not used.",
+    "Uncertain buildings use their best simple approximation.",
+    "Complex roofs, roof steps, dormers and hips are not reconstructed.",
+    "Ground bases use nearby ground observations at the anchor.",
+    "GLBs have placeholder colors; UV textures are not generated.",
+    "Gable overhangs have no modeled soffit or fascia thickness."
+  ]
+}

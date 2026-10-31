@@ -1,0 +1,33 @@
+{
+  "default": {
+    "wall": "wall_default",
+    "roof": "roof_default"
+  },
+  "materials": {
+    "wall_default": {
+      "texture": "textures/wall_default.png",
+      "viewer_texture": "textures/wall_default.tga",
+      "repeat_width_metres": 3.0,
+      "repeat_height_metres": 3.0
+    },
+    "wall_plain": {
+      "texture": "textures/wall_plain.png",
+      "viewer_texture": "textures/wall_plain.tga",
+      "repeat_width_metres": 3.0,
+      "repeat_height_metres": 3.0
+    },
+    "roof_default": {
+      "texture": "textures/roof_default.png",
+      "viewer_texture": "textures/roof_default.tga",
+      "repeat_width_metres": 2.0,
+      "repeat_height_metres": 2.0
+    },
+    "roof_red_tile": {
+      "texture": "textures/roof_red_tile.png",
+      "viewer_texture": "textures/roof_red_tile.tga",
+      "repeat_width_metres": 2.0,
+      "repeat_height_metres": 2.0
+    }
+  },
+  "buildings": {}
+}

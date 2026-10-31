@@ -29,9 +29,10 @@ script order:
 10. pack_viewer_vegetation.py (pack the vegetation tiles and tree billboards to a viewer compatible format)
 alternative in the future:
 - generate_historical_city_model.py (run once and output a complete city model, high possibility that it won't run all the way without problems but technically possible) (this script doesn't really exist yet)
-11. prepare_buildings.py (prepare building geopackage and point cloud data for roofer)
-12.  run_roofer.bat (in the folder made by prepare_buildings_for_roofer.bat) (run roofer with certain arguments)
-13. prepare_buildings_from_roofer.py
+11. prepare_buildings_for_roofer.py (prepare building geopackage and point cloud data for roofer, actually roofer is not anymore used but it's still in the name for now)
+~~ 12.  run_roofer.bat (in the folder made by prepare_buildings_for_roofer.bat) (run roofer with certain arguments) ~~
+~~13. prepare_buildings_from_roofer.py (makes clean roofs if there are enough points for a building in the point cloud)~~
+14. generate_building_textures.py (generates simple procedural building textures.)
 
 install dependencies:
 pip install requests
