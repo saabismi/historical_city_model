@@ -477,7 +477,7 @@ Data* load(const std::string& filename, bool (*cancelled)()) {
     try {
         std::ifstream file(filename.c_str(), std::ios::binary);
 
-        if (file && readData(file, *data, cancelled()))
+        if (file && readData(file, *data, cancelled))
             return data;
 
     } catch (...) {
