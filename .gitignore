@@ -28,3 +28,4 @@ roofer_test/roofer_output
 *.bld
 espoo2008_dem_tiled/
 Historyviewer/espoo2008_terrain/
+Historyviewer/espoo2008_terrain_quick/

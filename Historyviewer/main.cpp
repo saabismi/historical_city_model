@@ -23,7 +23,7 @@
 using namespace std;
 
 // Existing terrain location: unchanged.
-const string tilesLocation = "2008_terrain";
+const string tilesLocation = "espoo2008_terrain_quick";
 
 // Existing vegetation location: unchanged.
 const string vegetationLocation = "2008_vegetation_viewer";
@@ -1449,7 +1449,7 @@ int choosePreset(HINSTANCE instance) {
 
     HWND launcher = CreateWindowA(
         wc.lpszClassName,
-        "Terrain viewer - graphics",
+        "Historyviewer - graphics",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
         CW_USEDEFAULT, CW_USEDEFAULT,
         470, 180,
@@ -1517,7 +1517,7 @@ bool initializeOpenGL(HINSTANCE instance) {
 
     windowHandle = CreateWindowA(
         wc.lpszClassName,
-        "Terrain viewer",
+        "Historyviewer",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT,
         viewportWidth, viewportHeight,
@@ -1645,7 +1645,7 @@ int WINAPI WinMain(
             "Cannot read terrain_index.txt.\n\n"
             "Launch with the prepared terrain folder "
             "as an argument.",
-            "Terrain viewer",
+            "Historyviewer",
             MB_OK | MB_ICONERROR
         );
         return 1;
@@ -1681,7 +1681,7 @@ int WINAPI WinMain(
         MessageBoxA(
             0,
             "OpenGL initialization failed.",
-            "Terrain viewer",
+            "Historyviewer",
             MB_OK | MB_ICONERROR
         );
         return 1;
@@ -1775,7 +1775,7 @@ int WINAPI WinMain(
         MessageBoxA(
             0,
             "Cannot start the background loader.",
-            "Terrain viewer",
+            "Historyviewer",
             MB_OK | MB_ICONERROR
         );
 

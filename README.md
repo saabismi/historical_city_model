@@ -41,9 +41,9 @@ The development has been done on windows 11 and python scripts have been run ins
 
 ### Script order:
 
-__optional steps:__
-1. merge_orthos_gpt.py (merges orthophotos to one big file)
-2. tile_orthos_gpt.py (turns a large ortho to sensibly sized tiles)
+__optional steps if you are using a raster as the extent layer:__
+1. merge_orthos.py (merges orthophotos to one big file)
+2. tile_orthos.py (turns a large ortho to sensibly sized tiles)
 
 **actual steps**
 1. make a orthophoto or geopackage layer that acts as the "area of interest" (the extent of that layer will be the area of interest)
@@ -51,8 +51,8 @@ __optional steps:__
 3. `make_tiled_dem.py` (makes a tiled DEM from the downloaded point cloud using the specified extent (tif or gpkg), also optionally makes glb files (tiles))
 4. `download_mtk.py` (download a specific year's maastotietokanta files for whole Finland)
 5. `clip_mtk.py` (clips maastotietokanta layers to the extent of the orthophoto/geopackage)
-6. `prepare_terrain.py` (makes a lightweight tiled terrain with LOD levels (5 by default) that can be used in "Historyviewer"
-7. `generate_vegetation.py` (generate vegetation billboard photo files)
+6. `prepare_terrain_parallel.py` (makes a lightweight tiled terrain with LOD levels (5 by default) that can be used in "Historyviewer", this is the updated version of the script which processes using multiple workers working in parallel and writes the water polygons as a mask instead of the slow initial step in the old script.
+7. `generate_vegetation_assets.py` (generate vegetation billboard photo files)
 8. `prepare_vegetation.py` (prepare vegetation areas (tiles and cells) and locations for plants)
 - alternative: `prepare_vegetation_parallel.py` (runs multiple workers at the same time, should be faster than the standard script on the line above)
 9. `pack_viewer_vegetation.py` (pack the vegetation tiles and tree billboards to a viewer compatible format)

@@ -3,34 +3,56 @@
 Prepare compact terrain tiles, filling land gaps and excluding MTK water.
 
 Usage:
-    python prepare_terrain.py -i espoo_terrain -o viewer_terrain
-    python prepare_terrain.py -i espoo_terrain -o viewer_terrain \
-        --water MTK_2009_clipped/mtk-vakavesi_2009_clipped.gpkg
+    python prepare_terrain_parallel.py -i espoo2008_dem_tiled -o Historyviewer/espoo2008_terrain_quick --water MTK_2009_clipped/mtk-vakavesi_2009_clipped.gpkg --workers 4
+
+    python prepare_terrain_parallel.py -i espoo_terrain -o viewer_terrain \
+        --water MTK_2009_clipped/mtk-vakavesi_2009_clipped.gpkg \
+        --workers 4 \
+        --fill-distance 200
 
 Arguments:
-    -i, --input-dir   Folder containing tile_manifest.json and dem/.
-    -o, --output-dir  Output folder; must be empty or not yet exist.
-    --water           Water-polygon GeoPackage; default shown above.
-    --levels          Number of terrain LODs; default 5.
+    -i, --input-dir       Folder containing tile_manifest.json and dem/.
+    -o, --output-dir      New or empty output folder.
+    --water              GeoPackage containing water polygons.
+    --levels             Number of terrain LODs; default 5.
+    --workers            Parallel tile-conversion workers; default 2.
+    --fill-distance      Maximum land-gap interpolation distance in metres;
+                         default 200. (for example where there are large buildings and big holes in the ground surface data)
+     --allow-missing-land-cells 1000 (if there are less than specified amount of land cover cells without height data, ignore it. default is 1000
+
 
 Outputs:
     terrain_index.txt
     metadata.json
     tiles/*.trn
 
-Missing elevations are interpolated across a combined disk-backed DEM.
-Water polygons are then imposed as NoData. Original DEMs are not modified.
-Temporary rasters require additional disk space and are deleted afterward.
+Processing:
+    1. Build a combined disk-backed DEM.
+    2. Rasterize MTK water polygons into a separate mask.
+    3. Fill missing LAND cells only, using a bounded search distance.
+    4. Keep water cells as NoData.
+    5. Convert terrain tiles in parallel.
 
-Requires: GDAL Python bindings, numpy, rasterio.
+Original DEMs are not modified. Temporary rasters are deleted afterward.
+
+Requires:
+    GDAL Python bindings, numpy, rasterio.
 """
 
 import argparse
+import atexit
 import json
 import math
+import multiprocessing
 import struct
 import sys
 import tempfile
+import time
+from concurrent.futures import (
+    ProcessPoolExecutor,
+    FIRST_COMPLETED,
+    wait,
+)
 from pathlib import Path
 
 import numpy as np
@@ -39,15 +61,19 @@ from rasterio.windows import Window
 from osgeo import gdal, ogr, osr
 
 
-# Binary signature expected by the existing C++ viewer.
 MAGIC = b"TRN1"
-
-# Working rasters use this value for missing elevations.
 NODATA = -9999.0
 
+WORKER_DATASET = None
+WORKER_ENVIRONMENT = None
+
+
+# ============================================================================
+# INPUT VALIDATION
+# ============================================================================
 
 def traditional_crs(crs):
-    """Clone a CRS with conventional GIS x/y axis order."""
+    """Clone a CRS with traditional GIS x/y axis order."""
     result = crs.Clone()
     result.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     return result
@@ -55,18 +81,22 @@ def traditional_crs(crs):
 
 def inspect_dems(source, manifest):
     """
-    Validate source DEMs and determine the common grid and project bounds.
+    Validate source DEMs and calculate their combined bounds.
 
-    Tiles with no DEM can still be generated if the manifest provides their
-    core_bounds and the surrounding mosaic contains interpolation sources.
+    Tiles without DEM files are still included through their core_bounds,
+    allowing global interpolation to fill their area if neighboring DEMs
+    provide enough support.
     """
     filenames = []
     reference_crs = None
     reference_transform = None
     resolution = None
-    dem_bounds = []
+    all_bounds = []
 
     for tile in manifest["tiles"]:
+        if tile.get("core_bounds"):
+            all_bounds.append(tuple(tile["core_bounds"]))
+
         if not tile.get("dem"):
             continue
 
@@ -75,80 +105,116 @@ def inspect_dems(source, manifest):
             raise ValueError(f"Missing DEM: {filename}")
 
         with rasterio.open(filename) as dataset:
-            t = dataset.transform
+            transform = dataset.transform
 
             if dataset.count != 1:
                 raise ValueError(f"Expected a single-band DEM: {filename}")
             if dataset.crs is None:
                 raise ValueError(f"DEM has no CRS: {filename}")
-            if t.b != 0 or t.d != 0 or t.a <= 0 or t.e >= 0:
+            if (
+                transform.b != 0
+                or transform.d != 0
+                or transform.a <= 0
+                or transform.e >= 0
+            ):
                 raise ValueError(f"DEM must be north-up: {filename}")
-            if not math.isclose(t.a, -t.e, rel_tol=1e-8):
+            if not math.isclose(
+                transform.a, -transform.e, rel_tol=1e-8
+            ):
                 raise ValueError(f"DEM cells must be square: {filename}")
 
             if reference_crs is None:
                 reference_crs = dataset.crs
-                reference_transform = t
-                resolution = t.a
+                reference_transform = transform
+                resolution = transform.a
             else:
                 if dataset.crs != reference_crs:
                     raise ValueError(f"DEM CRS mismatch: {filename}")
-                if not math.isclose(t.a, resolution, rel_tol=1e-8):
+                if not math.isclose(
+                    transform.a, resolution, rel_tol=1e-8
+                ):
                     raise ValueError(f"DEM resolution mismatch: {filename}")
 
-                # All tiles must sit on the same pixel lattice.
                 for offset in (
-                    (t.c - reference_transform.c) / resolution,
-                    (t.f - reference_transform.f) / resolution,
+                    (transform.c - reference_transform.c) / resolution,
+                    (transform.f - reference_transform.f) / resolution,
                 ):
                     if not math.isclose(offset, round(offset), abs_tol=1e-5):
-                        raise ValueError(f"DEM grid misalignment: {filename}")
+                        raise ValueError(
+                            f"DEM grid misalignment: {filename}"
+                        )
 
-            b = dataset.bounds
-            dem_bounds.append([b.left, b.bottom, b.right, b.top])
+            bounds = dataset.bounds
+            all_bounds.append((
+                bounds.left,
+                bounds.bottom,
+                bounds.right,
+                bounds.top,
+            ))
 
         filenames.append(str(filename))
 
     if not filenames:
         raise ValueError("The manifest contains no available DEMs.")
 
-    # Include cores of tiles skipped during original DEM generation.
-    all_bounds = dem_bounds + [
-        tile["core_bounds"]
-        for tile in manifest["tiles"]
-        if tile.get("core_bounds")
-    ]
+    for bounds in all_bounds:
+        if (
+            len(bounds) != 4
+            or not all(math.isfinite(value) for value in bounds)
+            or bounds[0] >= bounds[2]
+            or bounds[1] >= bounds[3]
+        ):
+            raise ValueError(f"Invalid DEM/core bounds: {bounds}")
 
-    xmin = min(b[0] for b in all_bounds)
-    ymin = min(b[1] for b in all_bounds)
-    xmax = max(b[2] for b in all_bounds)
-    ymax = max(b[3] for b in all_bounds)
+        for coordinate, origin in (
+            (bounds[0], reference_transform.c),
+            (bounds[2], reference_transform.c),
+            (bounds[1], reference_transform.f),
+            (bounds[3], reference_transform.f),
+        ):
+            offset = (coordinate - origin) / resolution
+            if not math.isclose(offset, round(offset), abs_tol=1e-5):
+                raise ValueError(
+                    f"Manifest core bounds are not DEM-grid aligned: {bounds}"
+                )
 
-    # Validate that the requested outer extent lies on the same grid.
-    for coordinate, origin in (
-        (xmin, reference_transform.c),
-        (xmax, reference_transform.c),
-        (ymin, reference_transform.f),
-        (ymax, reference_transform.f),
-    ):
-        offset = (coordinate - origin) / resolution
-        if not math.isclose(offset, round(offset), abs_tol=1e-5):
-            raise ValueError("Manifest core bounds are not DEM-grid aligned.")
+    combined = (
+        min(bounds[0] for bounds in all_bounds),
+        min(bounds[1] for bounds in all_bounds),
+        max(bounds[2] for bounds in all_bounds),
+        max(bounds[3] for bounds in all_bounds),
+    )
 
-    return filenames, resolution, (xmin, ymin, xmax, ymax)
+    return filenames, resolution, combined
 
 
-def build_filled_mosaic(filenames, resolution, bounds, temporary_dir):
+def tile_bounds(source, tile):
+    """Return a tile's core bounds."""
+    if tile.get("core_bounds"):
+        return tuple(tile["core_bounds"])
+
+    if tile.get("dem"):
+        with rasterio.open(source / tile["dem"]) as dataset:
+            bounds = dataset.bounds
+            return bounds.left, bounds.bottom, bounds.right, bounds.top
+
+    return None
+
+
+# ============================================================================
+# COMBINED DEM
+# ============================================================================
+
+def build_mosaic(filenames, resolution, bounds, temporary_dir):
     """
-    Create a writable combined DEM and fill missing elevations globally.
+    Create a writable combined DEM mosaic.
 
-    This removes the old hole-size and tile-boundary restrictions. Large
-    unobserved regions can take a long time to interpolate.
+    Missing cells are not filled here. Filling is handled later with an
+    explicit land/water mask.
     """
     vrt_path = temporary_dir / "combined.vrt"
-    mosaic_path = temporary_dir / "filled_watermasked.tif"
+    mosaic_path = temporary_dir / "working_dem.tif"
 
-    # BuildVRT respects each source's declared NoData.
     vrt = gdal.BuildVRT(
         str(vrt_path),
         filenames,
@@ -185,65 +251,124 @@ def build_filled_mosaic(filenames, resolution, bounds, temporary_dir):
 
     band = mosaic.GetRasterBand(1)
 
-    # Normalize nonfinite elevations to the working NoData value.
-    valid_count = 0
-    for y in range(0, mosaic.RasterYSize, 256):
-        height = min(256, mosaic.RasterYSize - y)
-        for x in range(0, mosaic.RasterXSize, 256):
-            width = min(256, mosaic.RasterXSize - x)
-            data = band.ReadAsArray(x, y, width, height)
-            valid = np.isfinite(data) & (data != NODATA)
-            valid_count += int(valid.sum())
+    try:
+        valid_count = 0
 
-            if np.any(~np.isfinite(data)):
-                data[~np.isfinite(data)] = NODATA
-                band.WriteArray(data, x, y)
+        for y in range(0, mosaic.RasterYSize, 512):
+            height = min(512, mosaic.RasterYSize - y)
 
-    band.FlushCache()
+            for x in range(0, mosaic.RasterXSize, 512):
+                width = min(512, mosaic.RasterXSize - x)
+                data = band.ReadAsArray(x, y, width, height)
 
-    if not valid_count:
-        raise ValueError("Combined DEM has no valid ground elevations.")
+                nonfinite = ~np.isfinite(data)
+                if np.any(nonfinite):
+                    data[nonfinite] = NODATA
+                    band.WriteArray(data, x, y)
 
-    # A search radius spanning the mosaic allows large gaps to be filled.
-    search_distance = math.hypot(
-        mosaic.RasterXSize, mosaic.RasterYSize
-    ) + 1
+                valid = (data != NODATA) & np.isfinite(data)
+                valid_count += int(valid.sum())
 
-    print("Interpolating missing elevations across the combined DEM...")
-    print("This can be slow for large gaps, including sea before masking.")
+        band.FlushCache()
 
-    status = gdal.FillNodata(
-        targetBand=band,
-        maskBand=band.GetMaskBand(),
-        maxSearchDist=search_distance,
-        smoothingIterations=0,
-    )
+        if valid_count == 0:
+            raise ValueError("Combined DEM has no valid ground elevations.")
 
-    if status != 0:
-        raise RuntimeError("Terrain interpolation failed.")
-
-    band.FlushCache()
-    band = None
-    mosaic.FlushCache()
-    mosaic = None
+    finally:
+        band = None
+        mosaic.FlushCache()
+        mosaic = None
 
     return mosaic_path
 
 
-def apply_water_polygons(mosaic_path, water_path):
-    """
-    Burn all polygon layers from the water GeoPackage into the working DEM.
+# ============================================================================
+# WATER MASKING
+# ============================================================================
 
-    Geometries are transformed to the DEM CRS. Nonpolygon layers are ignored.
-    Rasterization uses ALL_TOUCHED, conservatively excluding shoreline cells.
+def create_byte_raster_like(reference_path, output_path, fill_value=0):
+    """Create a tiled Byte GeoTIFF with the same grid as reference_path."""
+    reference = gdal.Open(str(reference_path), gdal.GA_ReadOnly)
+    if reference is None:
+        raise RuntimeError(f"Cannot open reference raster: {reference_path}")
+
+    driver = gdal.GetDriverByName("GTiff")
+    dataset = driver.Create(
+        str(output_path),
+        reference.RasterXSize,
+        reference.RasterYSize,
+        1,
+        gdal.GDT_Byte,
+        options=[
+            "TILED=YES",
+            "BIGTIFF=YES",
+            "COMPRESS=DEFLATE",
+        ],
+    )
+
+    if dataset is None:
+        raise RuntimeError(f"Cannot create raster: {output_path}")
+
+    dataset.SetGeoTransform(reference.GetGeoTransform())
+    dataset.SetProjection(reference.GetProjection())
+
+    band = dataset.GetRasterBand(1)
+    band.Fill(fill_value)
+    band.FlushCache()
+
+    band = None
+    dataset = None
+    reference = None
+
+
+def burn_geometry_batch(raster_path, crs, geometries, value):
+    """Burn a list of OGR geometries into one raster band."""
+    raster = gdal.Open(str(raster_path), gdal.GA_Update)
+    if raster is None:
+        raise RuntimeError(f"Cannot open raster for update: {raster_path}")
+
+    memory = ogr.GetDriverByName("Memory").CreateDataSource("")
+    layer = memory.CreateLayer("mask", srs=crs, geom_type=ogr.wkbUnknown)
+
+    for geometry in geometries:
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetGeometry(geometry)
+        layer.CreateFeature(feature)
+        feature = None
+
+    status = gdal.RasterizeLayer(
+        raster,
+        [1],
+        layer,
+        burn_values=[value],
+        options=["ALL_TOUCHED=TRUE"],
+    )
+
+    layer = None
+    memory = None
+    raster.FlushCache()
+    raster = None
+
+    if status != 0:
+        raise RuntimeError("Rasterization failed.")
+
+
+def create_water_mask(mosaic_path, water_path, output_path):
     """
-    mosaic = gdal.Open(str(mosaic_path), gdal.GA_Update)
+    Rasterize MTK water polygons to a Byte mask:
+        1 = water
+        0 = non-water
+    """
+    create_byte_raster_like(mosaic_path, output_path, fill_value=0)
+
+    mosaic = gdal.Open(str(mosaic_path), gdal.GA_ReadOnly)
     if mosaic is None:
-        raise RuntimeError("Cannot reopen the working DEM.")
+        raise RuntimeError("Cannot open mosaic for CRS lookup.")
 
     target = osr.SpatialReference()
     target.ImportFromWkt(mosaic.GetProjection())
     target = traditional_crs(target)
+    mosaic = None
 
     source = ogr.Open(str(water_path), 0)
     if source is None:
@@ -253,11 +378,11 @@ def apply_water_polygons(mosaic_path, water_path):
 
     for layer_index in range(source.GetLayerCount()):
         layer = source.GetLayerByIndex(layer_index)
-        source_crs = layer.GetSpatialRef()
 
-        # Ignore nonspatial tables.
         if layer.GetGeomType() == ogr.wkbNone:
             continue
+
+        source_crs = layer.GetSpatialRef()
         if source_crs is None:
             raise ValueError(f"Water layer {layer.GetName()!r} has no CRS.")
 
@@ -270,105 +395,232 @@ def apply_water_polygons(mosaic_path, water_path):
                 source_crs, target
             )
 
-        # Use bounded-size batches rather than storing every polygon in RAM.
         batch = []
+
         for feature in layer:
             geometry = feature.GetGeometryRef()
             if geometry is None or geometry.IsEmpty():
                 continue
 
             geometry = geometry.Clone()
+
             if not geometry.IsValid():
                 geometry = geometry.MakeValid()
 
+            if geometry is None or geometry.IsEmpty():
+                continue
+
             if ogr.GT_Flatten(geometry.GetGeometryType()) not in (
-                ogr.wkbPolygon, ogr.wkbMultiPolygon
+                ogr.wkbPolygon,
+                ogr.wkbMultiPolygon,
             ):
                 continue
 
             if transformation is not None:
-                geometry.Transform(transformation)
+                if geometry.Transform(transformation) != 0:
+                    raise RuntimeError("Water geometry transformation failed.")
 
             batch.append(geometry)
             polygon_count += 1
 
             if len(batch) >= 500:
-                burn_batch(mosaic, target, batch)
+                burn_geometry_batch(output_path, target, batch, value=1)
                 batch = []
 
         if batch:
-            burn_batch(mosaic, target, batch)
+            burn_geometry_batch(output_path, target, batch, value=1)
 
     source = None
-    mosaic.FlushCache()
-    mosaic = None
 
     if polygon_count == 0:
         raise ValueError("The water GeoPackage contains no usable polygons.")
 
-    print(f"Applied {polygon_count} water polygons.")
+    print(f"Rasterized {polygon_count} water polygons.")
 
 
-def burn_batch(mosaic, crs, geometries):
-    """Rasterize a small in-memory polygon batch into the DEM as NoData."""
-    memory = ogr.GetDriverByName("Memory").CreateDataSource("")
-    layer = memory.CreateLayer("water", srs=crs, geom_type=ogr.wkbUnknown)
+def create_fill_mask(mosaic_path, water_mask_path, output_path):
+    """
+    Create GDAL FillNodata validity mask:
+        1 = valid source OR water cell that must not be filled
+        0 = land NoData cell that should be interpolated
 
-    for geometry in geometries:
-        feature = ogr.Feature(layer.GetLayerDefn())
-        feature.SetGeometry(geometry)
-        layer.CreateFeature(feature)
-        feature = None
+    The water cells are set to 1 in this mask to prevent FillNodata from
+    trying to interpolate them. The NODATA option prevents their -9999 target
+    values from being used as interpolation sources.
+    """
+    create_byte_raster_like(mosaic_path, output_path, fill_value=0)
 
-    status = gdal.RasterizeLayer(
-        mosaic,
-        [1],
-        layer,
-        burn_values=[NODATA],
-        options=["ALL_TOUCHED=TRUE"],
+    mosaic = gdal.Open(str(mosaic_path), gdal.GA_ReadOnly)
+    water = gdal.Open(str(water_mask_path), gdal.GA_ReadOnly)
+    mask = gdal.Open(str(output_path), gdal.GA_Update)
+
+    if mosaic is None or water is None or mask is None:
+        raise RuntimeError("Could not open rasters for fill-mask creation.")
+
+    dem_band = mosaic.GetRasterBand(1)
+    water_band = water.GetRasterBand(1)
+    mask_band = mask.GetRasterBand(1)
+
+    for y in range(0, mosaic.RasterYSize, 512):
+        height = min(512, mosaic.RasterYSize - y)
+
+        for x in range(0, mosaic.RasterXSize, 512):
+            width = min(512, mosaic.RasterXSize - x)
+
+            data = dem_band.ReadAsArray(x, y, width, height)
+            water_data = water_band.ReadAsArray(x, y, width, height)
+
+            valid_source = np.isfinite(data) & (data != NODATA)
+            is_water = water_data != 0
+
+            # Fill only cells where this mask is zero.
+            validity = (valid_source | is_water).astype(np.uint8)
+
+            mask_band.WriteArray(validity, x, y)
+
+    mask_band.FlushCache()
+
+    mask_band = None
+    water_band = None
+    dem_band = None
+    mask = None
+    water = None
+    mosaic = None
+
+
+def fill_land_gaps(mosaic_path, fill_mask_path, fill_distance):
+    """
+    Interpolate land gaps only, leaving water excluded.
+
+    maxSearchDist is bounded instead of using the diagonal of the mosaic.
+    """
+    mosaic = gdal.Open(str(mosaic_path), gdal.GA_Update)
+    mask = gdal.Open(str(fill_mask_path), gdal.GA_ReadOnly)
+
+    if mosaic is None or mask is None:
+        raise RuntimeError("Could not open DEM/mask for land-gap filling.")
+
+    band = mosaic.GetRasterBand(1)
+    mask_band = mask.GetRasterBand(1)
+
+    print("Interpolating missing LAND elevations only...")
+    print(f"Maximum fill search distance: {fill_distance:g} m")
+
+    status = gdal.FillNodata(
+        targetBand=band,
+        maskBand=mask_band,
+        maxSearchDist=fill_distance,
+        smoothingIterations=0,
+        options=[f"NODATA={NODATA}"],
     )
-    memory = None
 
     if status != 0:
-        raise RuntimeError("Water polygon rasterization failed.")
+        raise RuntimeError("Land-only terrain interpolation failed.")
+
+    band.FlushCache()
+    mosaic.FlushCache()
+
+    mask_band = None
+    band = None
+    mask = None
+    mosaic = None
 
 
-def verify_land_complete(mosaic_path):
+def apply_water_to_dem(mosaic_path, water_mask_path):
+    """Set water cells back to NODATA after interpolation."""
+    mosaic = gdal.Open(str(mosaic_path), gdal.GA_Update)
+    water = gdal.Open(str(water_mask_path), gdal.GA_ReadOnly)
+
+    if mosaic is None or water is None:
+        raise RuntimeError("Could not open rasters for final water masking.")
+
+    dem_band = mosaic.GetRasterBand(1)
+    water_band = water.GetRasterBand(1)
+
+    for y in range(0, mosaic.RasterYSize, 512):
+        height = min(512, mosaic.RasterYSize - y)
+
+        for x in range(0, mosaic.RasterXSize, 512):
+            width = min(512, mosaic.RasterXSize - x)
+
+            data = dem_band.ReadAsArray(x, y, width, height)
+            water_data = water_band.ReadAsArray(x, y, width, height)
+
+            water_cells = water_data != 0
+
+            if np.any(water_cells):
+                data[water_cells] = NODATA
+                dem_band.WriteArray(data, x, y)
+
+    dem_band.FlushCache()
+    mosaic.FlushCache()
+
+    water_band = None
+    dem_band = None
+    water = None
+    mosaic = None
+
+
+def verify_land_complete(mosaic_path, water_mask_path, allowed_missing_cells):
     """
-    Check remaining missing cells.
+    Count missing non-water cells after interpolation.
 
-    After masking, NoData is expected for water. Interpolation completeness
-    is checked before masking by calling this function at that stage.
+    A small number of remaining cells can occur along shorelines, narrow
+    unmapped water features, or isolated DEM defects. For the viewer, these
+    become tiny terrain holes rather than a reason to stop the whole process.
     """
-    with rasterio.open(mosaic_path) as dataset:
-        missing = 0
+    missing = 0
 
-        for _, window in dataset.block_windows(1):
-            data = dataset.read(1, window=window, masked=True)
-            missing += int((
-                np.ma.getmaskarray(data) | ~np.isfinite(data.data)
-            ).sum())
+    with rasterio.open(mosaic_path) as dem, rasterio.open(water_mask_path) as water:
+        for _, window in dem.block_windows(1):
+            data = dem.read(1, window=window, masked=True)
+            water_data = water.read(1, window=window)
+
+            invalid = np.ma.getmaskarray(data) | ~np.isfinite(data.data)
+            land_invalid = invalid & (water_data == 0)
+
+            missing += int(land_invalid.sum())
 
     if missing:
-        raise RuntimeError(
-            f"{missing} cells remain missing after interpolation. "
-            "No terrain files were generated."
+        print(
+            f"WARNING: {missing} non-water DEM cell(s) remain missing "
+            "after interpolation."
         )
 
+    if missing > allowed_missing_cells:
+        raise RuntimeError(
+            f"{missing} non-water cells remain missing after land-only "
+            f"interpolation. This exceeds the allowed limit of "
+            f"{allowed_missing_cells}. Increase --fill-distance, increase "
+            "--allow-missing-land-cells, or inspect DEM gaps."
+        )
+
+    return missing
+
+
+
+# ============================================================================
+# SAMPLING AND TRN WRITING
+# ============================================================================
 
 def sample_vertices(dataset, xs, ys):
     """
-    Sample the common mosaic at mesh vertex positions.
+    Bilinearly sample the common mosaic at terrain vertex positions.
 
-    All tiles use the same source grid, including samples beyond individual
-    tile boundaries. Only the outer project boundary is clamped.
+    Samples may cross individual tile boundaries. The outer project boundary
+    is clamped.
     """
-    t = dataset.transform
+    transform = dataset.transform
+
     columns = np.clip(
-        (xs - t.c) / t.a - 0.5, 0, dataset.width - 1
+        (xs - transform.c) / transform.a - 0.5,
+        0,
+        dataset.width - 1,
     )
     rows = np.clip(
-        (ys - t.f) / t.e - 0.5, 0, dataset.height - 1
+        (ys - transform.f) / transform.e - 0.5,
+        0,
+        dataset.height - 1,
     )
 
     c0 = np.floor(columns).astype(int)
@@ -376,8 +628,10 @@ def sample_vertices(dataset, xs, ys):
     c1 = np.minimum(c0 + 1, dataset.width - 1)
     r1 = np.minimum(r0 + 1, dataset.height - 1)
 
-    left, top = int(c0.min()), int(r0.min())
-    right, bottom = int(c1.max()) + 1, int(r1.max()) + 1
+    left = int(c0.min())
+    top = int(r0.min())
+    right = int(c1.max()) + 1
+    bottom = int(r1.max()) + 1
 
     data = dataset.read(
         1,
@@ -399,6 +653,7 @@ def sample_vertices(dataset, xs, ys):
         data[np.ix_(r1, c0)],
         data[np.ix_(r1, c1)],
     ]
+
     weights = [
         (1 - fy[:, None]) * (1 - fx[None, :]),
         (1 - fy[:, None]) * fx[None, :],
@@ -419,102 +674,236 @@ def sample_vertices(dataset, xs, ys):
 
 
 def axis_vertices(cell_count, stride, resolution):
-    """Include both boundaries even when the stride does not divide the core."""
+    """Include both tile boundaries, even when stride does not divide evenly."""
     indexes = list(range(0, cell_count, stride)) + [cell_count]
     return np.asarray(indexes, dtype=np.float64) * resolution
 
 
-def tile_bounds(source, tile):
-    """Obtain core bounds, including tiles with no original DEM file."""
-    if tile.get("core_bounds"):
-        return tuple(tile["core_bounds"])
+def aligned_index(value, description):
+    """Validate grid alignment and convert to an integer index."""
+    rounded = round(value)
 
-    if tile.get("dem"):
-        with rasterio.open(source / tile["dem"]) as dataset:
-            b = dataset.bounds
-            return b.left, b.bottom, b.right, b.top
+    if not math.isclose(value, rounded, abs_tol=1e-5):
+        raise ValueError(f"Grid misalignment: {description}")
 
-    return None
+    return rounded
 
 
 def prepare_tile(dataset, bounds, destination, levels):
     """
-    Write one TRN1 file compatible with the current C++ viewer.
+    Write one TRN1 file.
 
-    Each LOD stores:
-        uint32 column count, row count
-        float32 east offsets
-        float32 south offsets
-        float32 elevations including a one-sample halo
+    Fully water-covered tiles are omitted.
     """
     xmin, ymin, xmax, ymax = bounds
     resolution = dataset.transform.a
 
-    width = round((xmax - xmin) / resolution)
-    height = round((ymax - ymin) / resolution)
+    width = aligned_index((xmax - xmin) / resolution, "tile width")
+    height = aligned_index((ymax - ymin) / resolution, "tile height")
 
     if width < 1 or height < 1:
         return None
 
-    # Determine land elevation bounds from this tile's mosaic cells.
-    col = round((xmin - dataset.transform.c) / resolution)
-    row = round((dataset.transform.f - ymax) / resolution)
+    col = aligned_index(
+        (xmin - dataset.transform.c) / resolution,
+        "tile column",
+    )
+    row = aligned_index(
+        (dataset.transform.f - ymax) / resolution,
+        "tile row",
+    )
+
+    if (
+        col < 0 or row < 0
+        or col + width > dataset.width
+        or row + height > dataset.height
+    ):
+        raise ValueError("Tile core lies outside the combined DEM.")
 
     data = dataset.read(
-        1, window=Window(col, row, width, height), masked=True
+        1,
+        window=Window(col, row, width, height),
+        masked=True,
     ).astype(np.float64).filled(np.nan)
+
     values = data[np.isfinite(data)]
 
-    # Fully water-covered tiles do not need a terrain file.
     if not len(values):
         return None
 
-    zmin, zmax = float(values.min()), float(values.max())
+    zmin = float(values.min())
+    zmax = float(values.max())
 
-    with destination.open("wb") as output:
-        output.write(MAGIC)
-        output.write(struct.pack("<I", levels))
-        output.write(struct.pack(
-            "<4d2f", xmin, ymin, xmax, ymax, zmin, zmax
-        ))
+    partial = destination.with_name(destination.name + ".part")
 
-        for level in range(levels):
-            stride = 2 ** level
-            east = axis_vertices(width, stride, resolution)
-            south = axis_vertices(height, stride, resolution)
-            halo_distance = stride * resolution
-
-            east_halo = np.concatenate((
-                [east[0] - halo_distance],
-                east,
-                [east[-1] + halo_distance],
-            ))
-            south_halo = np.concatenate((
-                [south[0] - halo_distance],
-                south,
-                [south[-1] + halo_distance],
+    try:
+        with partial.open("wb") as output:
+            output.write(MAGIC)
+            output.write(struct.pack("<I", levels))
+            output.write(struct.pack(
+                "<4d2f", xmin, ymin, xmax, ymax, zmin, zmax
             ))
 
-            elevations = sample_vertices(
-                dataset, xmin + east_halo, ymax - south_halo
-            )
+            for level in range(levels):
+                stride = 2 ** level
+                east = axis_vertices(width, stride, resolution)
+                south = axis_vertices(height, stride, resolution)
+                halo_distance = stride * resolution
 
-            output.write(struct.pack("<2I", len(east), len(south)))
-            output.write(east.astype("<f4").tobytes())
-            output.write(south.astype("<f4").tobytes())
-            output.write(elevations.astype("<f4").tobytes())
+                east_halo = np.concatenate((
+                    [east[0] - halo_distance],
+                    east,
+                    [east[-1] + halo_distance],
+                ))
+                south_halo = np.concatenate((
+                    [south[0] - halo_distance],
+                    south,
+                    [south[-1] + halo_distance],
+                ))
+
+                elevations = sample_vertices(
+                    dataset,
+                    xmin + east_halo,
+                    ymax - south_halo,
+                )
+
+                output.write(struct.pack("<2I", len(east), len(south)))
+                output.write(east.astype("<f4").tobytes())
+                output.write(south.astype("<f4").tobytes())
+                output.write(elevations.astype("<f4").tobytes())
+
+        partial.replace(destination)
+
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
 
     return xmin, ymin, xmax, ymax, zmin, zmax
 
 
+# ============================================================================
+# PARALLEL WORKERS
+# ============================================================================
+
+def close_worker_resources():
+    """Close worker-local raster handles."""
+    global WORKER_DATASET, WORKER_ENVIRONMENT
+
+    if WORKER_DATASET is not None:
+        WORKER_DATASET.close()
+        WORKER_DATASET = None
+
+    if WORKER_ENVIRONMENT is not None:
+        WORKER_ENVIRONMENT.__exit__(None, None, None)
+        WORKER_ENVIRONMENT = None
+
+
+def initialize_worker(mosaic_path):
+    """Open the finished mosaic once per worker process."""
+    global WORKER_DATASET, WORKER_ENVIRONMENT
+
+    WORKER_ENVIRONMENT = rasterio.Env(
+        GDAL_CACHEMAX=64 * 1024 * 1024,
+        GDAL_NUM_THREADS="1",
+    )
+    WORKER_ENVIRONMENT.__enter__()
+
+    WORKER_DATASET = rasterio.open(mosaic_path, "r")
+    atexit.register(close_worker_resources)
+
+
+def process_tile(task):
+    """Convert one tile in a worker."""
+    number, tile_name, bounds, destination, levels = task
+
+    result = prepare_tile(
+        WORKER_DATASET,
+        bounds,
+        Path(destination),
+        levels,
+    )
+
+    return number, tile_name, result
+
+
+def parallel_results(tasks, workers, mosaic_path):
+    """Yield finished tile-conversion tasks."""
+    iterator = iter(tasks)
+    context = multiprocessing.get_context("spawn")
+
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=context,
+        initializer=initialize_worker,
+        initargs=(str(mosaic_path),),
+    ) as executor:
+        pending = {}
+
+        def submit_next():
+            try:
+                task = next(iterator)
+            except StopIteration:
+                return False
+
+            future = executor.submit(process_tile, task)
+            pending[future] = task
+            return True
+
+        for _ in range(workers * 2):
+            if not submit_next():
+                break
+
+        try:
+            while pending:
+                finished, _ = wait(pending, return_when=FIRST_COMPLETED)
+
+                for future in finished:
+                    task = pending.pop(future)
+
+                    try:
+                        result = future.result()
+                    except Exception as error:
+                        raise RuntimeError(
+                            f"Failed to prepare {task[1]}: {error}"
+                        ) from error
+
+                    yield result
+                    submit_next()
+
+        finally:
+            for future in pending:
+                future.cancel()
+
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Fill terrain gaps and prepare water-masked viewer tiles.",
+        description="Prepare water-aware compact terrain tiles.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("-i", "--input-dir", required=True)
     parser.add_argument("-o", "--output-dir", required=True)
     parser.add_argument("--levels", type=int, default=5)
+    parser.add_argument("--workers", type=int, default=2)
+    parser.add_argument(
+        "--fill-distance",
+        type=float,
+        default=200.0,
+        help="Maximum land-gap interpolation distance in metres.",
+    )
+    parser.add_argument(
+    "--allow-missing-land-cells",
+    type=int,
+    default=1000,
+    help=(
+        "Allow up to this many non-water DEM cells to remain NoData "
+        "after interpolation. Default 1000."
+    ),
+    )
+
     parser.add_argument(
         "--water",
         default="MTK_2009_clipped/mtk-vakavesi_2009_clipped.gpkg",
@@ -524,12 +913,19 @@ def main():
 
     if not 1 <= args.levels <= 10:
         parser.error("--levels must be between 1 and 10.")
+    if args.workers < 1:
+        parser.error("--workers must be at least 1.")
+    if args.fill_distance <= 0 or not math.isfinite(args.fill_distance):
+        parser.error("--fill-distance must be a positive finite number.")
+    if args.allow_missing_land_cells < 0:
+        parser.error("--allow-missing-land-cells cannot be negative.")
+
 
     gdal.UseExceptions()
     ogr.UseExceptions()
     osr.UseExceptions()
 
-    # Limit GDAL's block cache; this does not cap total process memory.
+    # Main-process cache for mosaic preparation.
     gdal.SetCacheMax(256 * 1024 * 1024)
 
     source = Path(args.input_dir).resolve()
@@ -551,50 +947,109 @@ def main():
 
     tiles_dir = output / "tiles"
     tiles_dir.mkdir(parents=True, exist_ok=True)
-    entries = []
 
-    # Store large temporary rasters on disk, not in memory.
+    tasks = []
+
+    for number, tile in enumerate(manifest["tiles"]):
+        core = tile_bounds(source, tile)
+
+        if core is None:
+            print(f"Skipping tile without core bounds: {tile['tile']}")
+            continue
+
+        filename = f"tile_{number:06d}.trn"
+        tasks.append((
+            number,
+            tile["tile"],
+            core,
+            str(tiles_dir / filename),
+            args.levels,
+        ))
+
+    if not tasks:
+        raise ValueError("No terrain tiles have usable core bounds.")
+
+    workers = min(args.workers, len(tasks))
+    entries_by_number = {}
+    omitted_water_tiles = 0
+    timings = {}
+
     with tempfile.TemporaryDirectory(
         prefix="_terrain_work_", dir=str(output)
     ) as temporary:
         temporary_dir = Path(temporary)
 
-        mosaic_path = build_filled_mosaic(
-            filenames, resolution, bounds, temporary_dir
+        start = time.perf_counter()
+        mosaic_path = build_mosaic(
+            filenames,
+            resolution,
+            bounds,
+            temporary_dir,
+        )
+        timings["mosaic_seconds"] = time.perf_counter() - start
+
+        water_mask_path = temporary_dir / "water_mask.tif"
+        fill_mask_path = temporary_dir / "fill_mask.tif"
+
+        start = time.perf_counter()
+        print("Rasterizing water polygons...")
+        create_water_mask(mosaic_path, water_path, water_mask_path)
+        timings["water_mask_seconds"] = time.perf_counter() - start
+
+        start = time.perf_counter()
+        print("Creating land-only interpolation mask...")
+        create_fill_mask(mosaic_path, water_mask_path, fill_mask_path)
+        fill_land_gaps(mosaic_path, fill_mask_path, args.fill_distance)
+        apply_water_to_dem(mosaic_path, water_mask_path)
+        remaining_missing_land_cells = verify_land_complete(
+            mosaic_path,
+            water_mask_path,
+            args.allow_missing_land_cells,
         )
 
-        # Confirm that all gaps have been filled before introducing water.
-        verify_land_complete(mosaic_path)
+        timings["land_gap_fill_seconds"] = time.perf_counter() - start
 
-        print("Removing terrain covered by MTK water polygons...")
-        apply_water_polygons(mosaic_path, water_path)
+        start = time.perf_counter()
+        print(
+            f"Converting {len(tasks)} tiles using {workers} worker(s)...",
+            flush=True,
+        )
 
-        with rasterio.open(mosaic_path) as dataset:
-            for number, tile in enumerate(manifest["tiles"]):
-                core = tile_bounds(source, tile)
-                if core is None:
-                    print(f"Skipping tile without core bounds: {tile['tile']}")
-                    continue
+        completed = 0
 
-                print(
-                    f"[{number + 1}/{len(manifest['tiles'])}] "
-                    f"Preparing {tile['tile']}"
-                )
+        for number, tile_name, result in parallel_results(
+            tasks,
+            workers,
+            mosaic_path,
+        ):
+            completed += 1
 
-                filename = f"tile_{number:06d}.trn"
-                result = prepare_tile(
-                    dataset, core, tiles_dir / filename, args.levels
-                )
+            if result is None:
+                omitted_water_tiles += 1
+                status = "omitted: no land cells"
+            else:
+                relative = f"tiles/tile_{number:06d}.trn"
+                entries_by_number[number] = (relative, result)
+                status = "written"
 
-                if result is not None:
-                    entries.append((f"tiles/{filename}", result))
+            print(
+                f"[{completed}/{len(tasks)}] {tile_name}: {status}",
+                flush=True,
+            )
+
+        timings["tile_conversion_seconds"] = time.perf_counter() - start
+
+    entries = [
+        entries_by_number[number]
+        for number in sorted(entries_by_number)
+    ]
 
     if not entries:
         raise ValueError("No land terrain tiles were generated.")
 
-    origin_x = min(b[0] for _, b in entries)
-    origin_y = max(b[3] for _, b in entries)
-    origin_z = math.floor(min(b[4] for _, b in entries))
+    origin_x = min(extent[0] for _, extent in entries)
+    origin_y = max(extent[3] for _, extent in entries)
+    origin_z = math.floor(min(extent[4] for _, extent in entries))
 
     with (output / "terrain_index.txt").open(
         "w", encoding="utf-8", newline="\n"
@@ -617,22 +1072,41 @@ def main():
             origin_x, origin_y, origin_z
         ],
         "levels": args.levels,
+        "workers": workers,
+        "fill_distance_metres": args.fill_distance,
+        "remaining_missing_land_cells": remaining_missing_land_cells,
+        "allowed_missing_land_cells": args.allow_missing_land_cells,
         "tile_count": len(entries),
+        "omitted_water_tiles": omitted_water_tiles,
         "source_manifest": str(manifest_path),
         "water_polygons": str(water_path),
-        "gap_filling": "Global GDAL FillNodata interpolation",
+        "gap_filling": "GDAL FillNodata on land cells only",
         "water_mask": "Polygon rasterization with ALL_TOUCHED",
+        "timings_seconds": timings,
     }
+
     (output / "metadata.json").write_text(
-        json.dumps(metadata, indent=2), encoding="utf-8"
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
     )
 
     print(f"\nPrepared {len(entries)} land tiles in {output}")
 
+    for stage, seconds in timings.items():
+        print(f"  {stage}: {seconds:.1f} seconds")
+
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
+
     try:
         main()
+    except KeyboardInterrupt:
+        print(
+            "\nInterrupted. Use a fresh output folder when rerunning.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     except Exception as error:
         print(f"\nERROR: {error}", file=sys.stderr)
         sys.exit(1)
