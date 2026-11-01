@@ -1,23 +1,53 @@
-# historical_city_model (WIP)
+# historical_city_model
 **very much work in progress, not ready :D**
-Set of scripts and other guide / utilities to generate a historical city model (or ingredients for it) from various geodata.
+A set of scripts and other guides / utilities to generate a historical city model from various geodata (in Finland / from Finnish sources).
+A historical city model differs from a "traditional" city model in that it is deliberately "outdated". It aims to portray an area as it was in a specific point in time or prior to / after specific events. The example model in this repository is Espoo in 2008 (because of data availability for that year) but my previously done historical city model depicts Tapiola and Otaniemi in "the early 2000s". That model includes some buildings that didn't exist at the same time but they all depict "a lost time".
+
+Some uses for a historical ciy model include but are not limited to: 
+- providing information to planners/citizens/preservationists/etc of how an area used to be. A 3D model tells more than a 2D image even if it's not 1:1 realistic (in that it doesn't contain every little detail)
+- Showcasing/studying a historical area or point in time in a museum
+- Reminiscing old times and lost places.
 
 ![screenshot of the Historyviewer showcasing trees and terrain in Otaniemi](screenshots/viewer_trees_otaniemi.png)
+![screenshot of the Historyviewer showcasing buildings, trees and terrain near/in Heiniemi](screenshots/buildings_in_viewer.png)
 
-you can use old versions of maastotietokanta (MTK) if they're suitable but you can try to digitise old drawn/printed map sheets and generate terrain and other elements using that.
-I was first trying to digitise 1960s aerial images and maps (peruskartta) but then resorted to 2008 maastotietokanta for simplicity's sake, and for actually progressing in making this pipeline. after the 2008 model can be generated with ease, I can concentrate more on making a 1960s city model.
+You can use old versions of maastotietokanta (MTK) (national terrain database) if they're suitable for your area an time point but you can (try to) digitise (either by hand or computer-aidedly) old drawn/printed map sheets and generate terrain and other elements using that.
 
-Also contains a simple legacy compatible viewer for the historical city model "Historyviewer"
+I was first trying to digitise 1960s aerial images and maps (peruskartta) for this project but then resorted to 2008 maastotietokanta for simplicity's sake, and for actually progressing in making this pipeline. The oldest aerial point cloud data provided by Maanmittauslaitos (National Land Survey of Finland) is from 2008. The oldest maastotietokanta data is from 2005) and even after that there are certain ["year releases"] (https://ftp.csc.fi/pub/sci/geo/geodata/mml/maastotietokanta/). After the 2008 model can be generated with ease, I can concentrate more on making a 1960s city model.
+
+## Historyviewer
+Also contains a simple (legacy compatible (hasn't been tested on actual legacy hardware or software yet)) viewer for the historical city model, work-name is "Historyviewer"
+
+### AI disclaimer:
+the scripts are mainly made using GPT 6.1 Sol with some manual edits :) the idea of the project is completely human-made :D
+
+### Accepted/confimed data and development environment
+The scripts are intended to work on data that is using CRS EPSG:3067 (ETRS-TM35FIN)
+Some scripts might give warnings if the CRS is wrong and might reproject it and output epsg:3067, but that can't be guaranteed for now.
 
 it is recommended to run the scripts in osgeo4W shell to have all the dependencies
-the scripts are made using GPT 6.1 Sol
 
-the scripts are intended to work on data that is using CRS EPSG:3067 (ETRS-TM35FIN)
-some scripts might give warnings if the CRS is wrong and might reproject it and output epsg 3067, but that can't be quaranteed for now.
+the development has been done on windows 11 and python scripts have been run inside the osgeo4W shell that comes with QGIS
 
-script order:
+## Try it out
+
+### install dependencies:
+´pip install requests´ (for downloading point clouds)
+´pip install "laspy[lazrs]" numpy scipy rasterio trimesh pyproj´
+´pip install fiona´ (this might not be anymore needed, but included just in case)
+´pip install numpy scipy rasterio "laspy[lazrs]" "shapely>=2.0"´ (for the vegetation generator)
+´pip install pillow numpy´ (for vegetation generation)
+~~roofer 1.0.0 (included in the directory)~~
+~~add roofer to environment variable in windows cmd: set "PATH=E:\Github\historical_city_model\roofer-v1.0.0\bin;%PATH%"~~
+´pip install numpy trimesh shapely mapbox-earcut´ (for 3D buildings generation)
+
+### script order:
+
+__optional steps:__
 1. merge_orthos_gpt.py (merges orthophotos to one big file)
 2. tile_orthos_gpt.py (turns a large ortho to sensibly sized tiles)
+
+**actual steps**
 3. download_oldest_pointcloud_gpt.py (downloads the oldest available point cloud for an area from csc/maanmittauslaitos)
 4. make_tiled_dem_glb.py (makes a tiled DEM from the downloaded point cloud, also optionally makes glb files (tiles))
 5. prepare_terrain.py (makes a lightweight tiled terrain with LOD levels (5 by default) that can be used in "Historyviewer"
@@ -31,51 +61,37 @@ alternative in the future:
 - generate_historical_city_model.py (run once and output a complete city model, high possibility that it won't run all the way without problems but technically possible) (this script doesn't really exist yet)
 11. generate_building_textures.py (generates simple procedural building textures.) 
 12. generate_buildings.py (generates buildings from maastotietokanta gpkg + MML point clouds and outputs 3D buildings with cleaned roof shapes and texture mapping for adding the textures generated by the previous script (or other textures). if not enough points are found for the roof, the building will use a fallback setting)
-~~ 11. prepare_buildings_for_roofer.py (prepare building geopackage and point cloud data for roofer, actually roofer is not anymore used but it's still in the name for now) ~~
-~~ 12.  run_roofer.bat (in the folder made by prepare_buildings_for_roofer.bat) (run roofer with certain arguments) ~~
-~~ 13. prepare_buildings_from_roofer.py (makes clean roofs if there are enough points for a building in the point cloud) ~~
-~~ 13. fit_building_roofs.py (takes in files from prepare_buildings_for_roofer.py, makes clean roofs if there are enough points for a building in the point cloud) this script should be later combined with prepare_buildings_for_roofer.py ~~
 
-install dependencies:
-pip install requests
-pip install "laspy[lazrs]" numpy scipy rasterio trimesh pyproj
-pip install fiona if something doesn't work.
-pip install numpy scipy rasterio "laspy[lazrs]" "shapely>=2.0" (for the vegetation generator)
-roofer 1.0.0 (included in the directory) add to environment variable in windows cmd: set "PATH=E:\Github\historical_city_model\roofer-v1.0.0\bin;%PATH%"
-pip install numpy trimesh shapely mapbox-earcut (for building preparation from roofer to viewer)
-
-
-
-## Todo
-- integrate geo sam pipeline for making training data for a visual model
-	- after having training data, go over the tiles (of orthophoto) and segment/classify the image content to things like building, forest, shrub, cliff, road, etc.
-- make textures for the glb/trn files using the segmentation/maastotietokanta objects
-- generate trees / vegetation using the segmentation 
-- generate roads as vector/polygon objects using the segmentation
+## Todo/issues
+- make textures for the terrain using the segmentation/maastotietokanta objects
+- generate roads as vector/polygon objects using the segmentation/MTK data
 - include grass objects in vegetation
-- low vegetation classified points might include power lines!
+- low vegetation classified points might include power lines! fix this by adding a buffer around MTK power lines and excluding those points from vegetation
+- buildings with semi realistic placeholder textures
+- buildings with accurate and realistic textures
+
+## Done
+- generate a tiled terrain from 2008 point cloud data 
+- generate trees / vegetation using spatial data
+- generate buildings with robust placeholder textures using building footprints from MTK and pointcloud data
 
 ## Ideas
 - in segmentation of old orthoimages or maps maybe currently standing old buildings should be used, only use segmentation results for demolished buildings
+- integrate geo sam pipeline for making training data for a visual model
+	- after having training data, go over the tiles (of orthophoto) and segment/classify the image content to things like building, forest, shrub, cliff, road, etc.
 
-### information about the viewer "Historyviewer"
-It is a C++ OpenGL viewer intended to run also on old hardware (xp era) and windows xp
+## Information about the viewer "Historyviewer"
+Historyviewer is a C++ OpenGL viewer intended to run also on old hardware (xp era) and windows xp
 before running or compiling the viewer, you should run prepare_terrain.py in /history_viewer to preprocess the terrain glb to a better and lighter format.
 
-Set up code::blocks 10.05
-create win32 gui app (frame based)
-go to project-> build options -> debug
-go to compiler settings -> other options and add -std=c++98
-go to release -> compiler settings -> compiler flags and make sure "optimize even more (fore speedd) [-O2]" is checked
-select the project name in the project build options window
-go to linker settings
-to "link libraries" add "gdi32" "user32" and "opengl32" if they are not present already
+### How to build
+- Set up code::blocks 10.05
+- create win32 gui app (frame based)
+- go to project-> build options -> debug
+- go to compiler settings -> other options and add -std=c++98
+- go to release -> compiler settings -> compiler flags and make sure "optimize even more (for speed) [-O2]" is checked
+- select the project name in the project build options window
+- go to linker settings
+-	to "link libraries" add "gdi32" "user32" and "opengl32" if they are not present already
 
-go to project -> set programs' arguments in e.g. debug target, enter the location where the terrain_index.txt and the lightweight optimized tiles subfolder are located inside. e.g. "E:\Github\historical_city_model\espoo1965_clouds\terrain_test"
-
-after that, you should be able to build and run the program!
-
-## textures for vegetation
-for making textures and vegetation we need to install
-pip install pillow numpy
-
+After that, you should be able to build and run the program! (given that you have all the correct files and city model data in the correct folder specified in ´main.cpp´

@@ -30,7 +30,7 @@ const string vegetationLocation = "2008_vegetation_viewer";
 
 // NEW: folder containing building_index.txt, building_materials.txt,
 // textures/, and tiles/. Change this name to match your actual output folder.
-const string buildingsLocation = "2008_buildings_textured_fixed";
+const string buildingsLocation = "2008_buildings_textured";
 
 const double PI = 3.14159265358979323846;
 
