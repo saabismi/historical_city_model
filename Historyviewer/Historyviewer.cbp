@@ -39,10 +39,14 @@
 			<Add library="kernel32" />
 			<Add library="opengl32" />
 		</Linker>
+		<Unit filename="buildings.cpp" />
+		<Unit filename="buildings.h" />
 		<Unit filename="main.cpp" />
 		<Unit filename="main_old.cpp">
 			<Option target="&lt;{~None~}&gt;" />
 		</Unit>
+		<Unit filename="vegetation.cpp" />
+		<Unit filename="vegetation.h" />
 		<Extensions>
 			<code_completion />
 			<debugger />

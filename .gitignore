@@ -26,3 +26,5 @@ roofer_test/roofer_output
 *.tiff
 *.glb
 *.bld
+espoo2008_dem_tiled/
+Historyviewer/espoo2008_terrain/
