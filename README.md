@@ -48,9 +48,9 @@ __optional steps:__
 **actual steps**
 3. download_oldest_pointcloud_gpt.py (downloads the oldest available point cloud for an area from csc/maanmittauslaitos)
 4. make_tiled_dem.py (makes a tiled DEM from the downloaded point cloud using the specified extent (tif or gpkg), also optionally makes glb files (tiles))
-5. prepare_terrain.py (makes a lightweight tiled terrain with LOD levels (5 by default) that can be used in "Historyviewer"
-6. clip_mtk.py (clips maastotietokanta layers to the extent of the merged orthophoto)
-7. generate_vegetation.py (generate vegetation billboards)
+5. clip_mtk.py (clips maastotietokanta layers to the extent of the orthophoto/geopackage)
+6. prepare_terrain.py (makes a lightweight tiled terrain with LOD levels (5 by default) that can be used in "Historyviewer"
+7. generate_vegetation.py (generate vegetation billboard photo files)
 8. prepare_vegetation.py (prepare vegetation areas (tiles and cells) and locations for plants)
 - alternative: prepare_vegetation_parallel.py (runs multiple workers at the same time, should be faster than the standard script on the line above)
 9. pack_viewer_vegetation.py (pack the vegetation tiles and tree billboards to a viewer compatible format)
