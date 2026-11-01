@@ -1,0 +1,151 @@
+{
+  "format": "road_materials_v1",
+  "default": {
+    "surface": "asphalt_faded",
+    "marking_white": "marking_white",
+    "marking_yellow": "marking_yellow"
+  },
+  "materials": {
+    "asphalt_faded": {
+      "texture": "textures/asphalt_faded.png",
+      "viewer_texture": "textures/asphalt_faded.tga",
+      "repeat_length_metres": 12.0,
+      "repeat_width_metres": 8.0,
+      "kind": "asphalt_faded",
+      "markings": []
+    },
+    "asphalt_fresh": {
+      "texture": "textures/asphalt_fresh.png",
+      "viewer_texture": "textures/asphalt_fresh.tga",
+      "repeat_length_metres": 12.0,
+      "repeat_width_metres": 8.0,
+      "kind": "asphalt_fresh",
+      "markings": []
+    },
+    "gravel": {
+      "texture": "textures/gravel.png",
+      "viewer_texture": "textures/gravel.tga",
+      "repeat_length_metres": 8.0,
+      "repeat_width_metres": 4.0,
+      "kind": "gravel",
+      "markings": []
+    },
+    "paved_footpath": {
+      "texture": "textures/paved_footpath.png",
+      "viewer_texture": "textures/paved_footpath.tga",
+      "repeat_length_metres": 6.0,
+      "repeat_width_metres": 3.0,
+      "kind": "paved_footpath",
+      "markings": []
+    },
+    "marking_white": {
+      "texture": "textures/marking_white.png",
+      "viewer_texture": "textures/marking_white.tga",
+      "repeat_length_metres": 1.0,
+      "repeat_width_metres": 1.0,
+      "kind": "solid_color",
+      "markings": []
+    },
+    "marking_yellow": {
+      "texture": "textures/marking_yellow.png",
+      "viewer_texture": "textures/marking_yellow.tga",
+      "repeat_length_metres": 1.0,
+      "repeat_width_metres": 1.0,
+      "kind": "solid_color",
+      "markings": []
+    },
+    "asphalt_center_dashed": {
+      "texture": "textures/asphalt_center_dashed.png",
+      "viewer_texture": "textures/asphalt_center_dashed.tga",
+      "repeat_length_metres": 12.0,
+      "repeat_width_metres": 8.0,
+      "kind": "asphalt_faded",
+      "markings": [
+        "center_dashed_white"
+      ]
+    },
+    "asphalt_edge_lines": {
+      "texture": "textures/asphalt_edge_lines.png",
+      "viewer_texture": "textures/asphalt_edge_lines.tga",
+      "repeat_length_metres": 12.0,
+      "repeat_width_metres": 8.0,
+      "kind": "asphalt_faded",
+      "markings": [
+        "edge_lines_white"
+      ]
+    },
+    "asphalt_edge_center_dashed": {
+      "texture": "textures/asphalt_edge_center_dashed.png",
+      "viewer_texture": "textures/asphalt_edge_center_dashed.tga",
+      "repeat_length_metres": 12.0,
+      "repeat_width_metres": 8.0,
+      "kind": "asphalt_faded",
+      "markings": [
+        "edge_lines_white",
+        "center_dashed_white"
+      ]
+    },
+    "asphalt_edge_double_yellow": {
+      "texture": "textures/asphalt_edge_double_yellow.png",
+      "viewer_texture": "textures/asphalt_edge_double_yellow.tga",
+      "repeat_length_metres": 12.0,
+      "repeat_width_metres": 8.0,
+      "kind": "asphalt_faded",
+      "markings": [
+        "edge_lines_white",
+        "center_double_yellow"
+      ]
+    }
+  },
+  "class_assignments": {
+    "12111": {
+      "description": "large motorway or arterial road",
+      "surface_material": "asphalt_edge_double_yellow"
+    },
+    "12112": {
+      "description": "large motorway or arterial road",
+      "surface_material": "asphalt_edge_double_yellow"
+    },
+    "12121": {
+      "description": "large main road",
+      "surface_material": "asphalt_edge_double_yellow"
+    },
+    "12122": {
+      "description": "road with center marking and edge lines",
+      "surface_material": "asphalt_edge_double_yellow"
+    },
+    "12131": {
+      "description": "regular street",
+      "surface_material": "asphalt_center_dashed"
+    },
+    "12141": {
+      "description": "narrow asphalt street, no markings",
+      "surface_material": "asphalt_faded"
+    },
+    "12313": {
+      "description": "gravel path",
+      "surface_material": "gravel"
+    },
+    "12314": {
+      "description": "paved footpath",
+      "surface_material": "paved_footpath"
+    },
+    "12316": {
+      "description": "narrow gravel path",
+      "surface_material": "gravel"
+    },
+    "fallback": {
+      "description": "unknown road class",
+      "surface_material": "asphalt_faded"
+    }
+  },
+  "feature_assignments": {},
+  "notes": [
+    "This is a prototype texture set.",
+    "Combined marking textures are convenient but inflexible.",
+    "Later, markings should preferably be separate geometry.",
+    "White center marking is dashed.",
+    "Yellow center marking is continuous double yellow.",
+    "Fresh asphalt is generated for future overrides."
+  ]
+}

@@ -1,0 +1,5 @@
+
+### some notes for self, to be prompted later
+tieviiva has a field VERSUH, the value is 0 by default, 1 for overpasses and -1 for underpasses. if a main road (or a road higher in the hierarchy has a -1 and another (lower tier road) has 0 or 1, make the lower tier road climb or dive underground in those spots. also can we make this script edit the corresponding terrain tiles and add the underpasses/bridges? for road portions that go over water, there should be along the road a little raised concrete thing and a low fence on the concrete on the sides. if it's not a big hassle.
+
+also if a road is defined to be above another road (either as an overpass or as the underpassED) road, add concrete sides and fences/railing. and add concrete walls for the underpass, take into consideration the width that the other road will be. make slopes sensible, for footpaths space in underpass should be 3m by default

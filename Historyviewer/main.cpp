@@ -19,10 +19,11 @@
 
 #include "vegetation.h"
 #include "buildings.h"
+#include "roads.h"
 
 using namespace std;
 
-// Existing terrain location: unchanged.
+// Existing terrain location:
 const string tilesLocation = "espoo2008_terrain_quick";
 
 // Existing vegetation location: unchanged.
@@ -31,6 +32,9 @@ const string vegetationLocation = "2008_vegetation_viewer";
 // NEW: folder containing building_index.txt, building_materials.txt,
 // textures/, and tiles/. Change this name to match your actual output folder.
 const string buildingsLocation = "2008_buildings_textured";
+
+// Location of the generated roads (includes textures)
+const string roadsLocation = "2008_roads";
 
 const double PI = 3.14159265358979323846;
 
@@ -102,6 +106,10 @@ struct Tile {
     std::string vegetationFilename;
     std::string buildingFilename;
 
+    std::string roadFilename;
+    roads::Data* roadsData;
+
+
     vegetation::Data* plants;
     buildings::Data* structures;
 
@@ -136,6 +144,7 @@ struct Result {
     Mesh* mesh;
     vegetation::Data* plants;
     buildings::Data* structures;
+    roads::Data* roadsData;
 };
 
 // Window and OpenGL objects.
@@ -523,6 +532,7 @@ DWORD WINAPI loaderMain(void*) {
 
         vegetation::Data* plants = 0;
         buildings::Data* structures = 0;
+        roads::Data* roadsData = 0;
 
         if (mesh && !loaderShouldStop()) {
             plants = vegetation::load(
@@ -534,6 +544,13 @@ DWORD WINAPI loaderMain(void*) {
         if (mesh && !loaderShouldStop()) {
             structures = buildings::load(
                 tiles[request.tile].buildingFilename,
+                loaderShouldStop
+            );
+        }
+
+        if (mesh && !loaderShouldStop()) {
+            roadsData = roads::load(
+                tiles[request.tile].roadFilename,
                 loaderShouldStop
             );
         }
@@ -551,6 +568,8 @@ DWORD WINAPI loaderMain(void*) {
         result.mesh = mesh;
         result.plants = plants;
         result.structures = structures;
+        result.roadsData = roadsData;
+
 
         EnterCriticalSection(&loaderLock);
         results.push_back(result);
@@ -592,6 +611,9 @@ size_t cacheBytes() {
 
         if (tiles[i].structures)
             bytes += tiles[i].structures->bytes();
+
+        if (tiles[i].roadsData)
+            bytes += tiles[i].roadsData->bytes();
     }
 
     return bytes;
