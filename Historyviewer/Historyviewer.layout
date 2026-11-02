@@ -7,8 +7,14 @@
 	<File name="buildings.h" open="1" top="0" tabpos="4">
 		<Cursor position="2859" topLine="0" />
 	</File>
-	<File name="main.cpp" open="1" top="1" tabpos="1">
-		<Cursor position="889" topLine="0" />
+	<File name="main.cpp" open="1" top="0" tabpos="1">
+		<Cursor position="3151" topLine="80" />
+	</File>
+	<File name="roads.cpp" open="1" top="1" tabpos="7">
+		<Cursor position="12708" topLine="388" />
+	</File>
+	<File name="roads.h" open="1" top="0" tabpos="6">
+		<Cursor position="1953" topLine="30" />
 	</File>
 	<File name="vegetation.cpp" open="1" top="0" tabpos="3">
 		<Cursor position="14115" topLine="424" />

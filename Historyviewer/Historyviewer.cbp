@@ -45,6 +45,8 @@
 		<Unit filename="main_old.cpp">
 			<Option target="&lt;{~None~}&gt;" />
 		</Unit>
+		<Unit filename="roads.cpp" />
+		<Unit filename="roads.h" />
 		<Unit filename="vegetation.cpp" />
 		<Unit filename="vegetation.h" />
 		<Extensions>
