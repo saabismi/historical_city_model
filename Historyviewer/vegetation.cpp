@@ -501,25 +501,6 @@ void beginFrame() {
         batches[i].clear();
 }
 
-// Conservative camera-relative AABB/frustum test.
-static bool visibleBox(
-    double xmin, double ymin, double zmin,
-    double xmax, double ymax, double zmax,
-    const double planes[6][4]
-) {
-    for (int p = 0; p < 6; ++p) {
-        double x = planes[p][0] >= 0 ? xmax : xmin;
-        double y = planes[p][1] >= 0 ? ymax : ymin;
-        double z = planes[p][2] >= 0 ? zmax : zmin;
-
-        if (planes[p][0]*x + planes[p][1]*y
-            + planes[p][2]*z + planes[p][3] < 0)
-            return false;
-    }
-    return true;
-}
-
-
 // Append one vertical card to its texture batch.
 // directionX/directionZ define the card's horizontal right direction.
 static void appendCard(
@@ -656,19 +637,10 @@ void collect(
 ) {
     if (!enabled || !data) return;
 
+    (void)planes;
+
     for (std::size_t i = 0; i < data->cells.size(); ++i) {
         const Cell& cell = data->cells[i];
-
-        double x0 = cell.xmin - originX - cameraX;
-        double x1 = cell.xmax - originX - cameraX;
-        double y0 = cell.ymin - originZ - cameraY;
-        double y1 = cell.ymax - originZ - cameraY;
-        double z0 = cell.zmin + originY - cameraZ;
-        double z1 = cell.zmax + originY - cameraZ;
-
-        // Restore the cell visibility test.
-        if (!visibleBox(x0, y0, z0, x1, y1, z1, planes))
-            continue;
 
         for (std::size_t j = 0; j < cell.plants.size(); ++j) {
             const Plant& plant = cell.plants[j];
@@ -683,29 +655,6 @@ void collect(
 
             double width = asset.width * plant.widthScale;
             double height = asset.height * plant.heightScale;
-
-            // Conservative sphere around the trunk-base pivot, suitable
-            // for upright crossed cards and fully tilted billboards.
-            double horizontalExtent = width * std::max(
-                asset.pivotU, 1.0f - asset.pivotU
-            );
-            double verticalExtent = height * std::max(
-                asset.pivotV, 1.0f - asset.pivotV
-            );
-            double radius = std::sqrt(
-                horizontalExtent * horizontalExtent
-                + verticalExtent * verticalExtent
-            );
-
-            // Individual plant culling prevents off-screen plants in a
-            // partially visible cell from consuming the render budget.
-            if (!visibleBox(
-                x - radius, y - radius, z - radius,
-                x + radius, y + radius, z + radius,
-                planes
-            )) {
-                continue;
-            }
 
             double centerY =
                 y + (0.5 - asset.pivotV) * height;

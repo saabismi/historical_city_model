@@ -60,7 +60,7 @@ void setPreset(int preset);
 // Begin one frame's vegetation collection.
 void beginFrame();
 
-// Cull cells and collect visible billboard vertices.
+// Collect billboard vertices from a terrain tile already deemed visible.
 // Camera and origin use your existing viewer coordinate system.
 void collect(
     const Data* data,
