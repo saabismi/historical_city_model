@@ -322,12 +322,14 @@ static bool readData(
     Data& data,
     bool (*cancelled)()
 ) {
-    char magic[4];
+    // ROAD1 is a FIVE-byte signature.
+    // The Python generator writes b"ROAD1" before the road count.
+    char magic[5];
     unsigned int roadCount;
 
-    if (!readBytes(file, magic, 4)
-        || std::memcmp(magic, "ROAD1", 4) != 0
-        || !readBytes(file, &roadCount, 4)
+    if (!readBytes(file, magic, sizeof(magic))
+        || std::memcmp(magic, "ROAD1", sizeof(magic)) != 0
+        || !readBytes(file, &roadCount, sizeof(roadCount))
         || roadCount > 500000) {
         return false;
     }

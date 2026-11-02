@@ -6,12 +6,13 @@ Initial selection (with GLB for inspection):
 python generate_buildings.py ^
     --buildings MTK_2009_clipped\mtk-rakennus_2009_clipped.gpkg ^
     --downloads espoo1965_clouds ^
-    --terrain Historyviewer\2008_terrain ^
+    --terrain Historyviewer\espoo2008_terrain_quick ^
     --materials Historyviewer\assets\buildings\materials.json ^
-    -o Historyviewer\2008_buildings_textured ^
-    --count 100 ^
-    --glb ^
-    --assume-epsg-3067
+    -o Historyviewer\espoo2008_buildings_all ^
+    --assume-epsg-3067 ^
+    --count 0 ^
+    --glb
+    
 
 Reuse persistent IDs:
     python generate_buildings.py \

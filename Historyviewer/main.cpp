@@ -31,10 +31,10 @@ const string vegetationLocation = "2008_vegetation_viewer";
 
 // NEW: folder containing building_index.txt, building_materials.txt,
 // textures/, and tiles/. Change this name to match your actual output folder.
-const string buildingsLocation = "2008_buildings_textured";
+const string buildingsLocation = "espoo2008_buildings_all";
 
 // Location of the generated roads (includes textures)
-const string roadsLocation = "2008_roads";
+const string roadsLocation = "espoo2008_roads";
 
 const double PI = 3.14159265358979323846;
 
@@ -126,6 +126,7 @@ struct Tile {
     Tile()
         : plants(0),
           structures(0),
+          roadsData(0),
           mesh(0),
           loadedLOD(-1),
           wantedLOD(-1),
@@ -636,6 +637,8 @@ void updateStreaming() {
         if (!result.mesh) {
             delete result.plants;
             delete result.structures;
+            delete result.roadsData;
+
             tile.failed = true;
             continue;
         }
@@ -650,10 +653,12 @@ void updateStreaming() {
         delete tile.mesh;
         delete tile.plants;
         delete tile.structures;
+        delete tile.roadsData;
 
         tile.mesh = result.mesh;
         tile.plants = result.plants;
         tile.structures = result.structures;
+        tile.roadsData = result.roadsData;
         tile.loadedLOD = result.lod;
     }
 
@@ -665,10 +670,12 @@ void updateStreaming() {
             delete tile.mesh;
             delete tile.plants;
             delete tile.structures;
+            delete tile.roadsData;
 
             tile.mesh = 0;
             tile.plants = 0;
             tile.structures = 0;
+            tile.roadsData = 0;
             tile.loadedLOD = -1;
         }
     }
@@ -707,13 +714,18 @@ void updateStreaming() {
         if (tile.structures)
             bytes -= tile.structures->bytes();
 
+        if (tile.roadsData)
+            bytes -= tile.roadsData->bytes();
+
         delete tile.mesh;
         delete tile.plants;
         delete tile.structures;
+        delete tile.roadsData;
 
         tile.mesh = 0;
         tile.plants = 0;
         tile.structures = 0;
+        tile.roadsData = 0;
         tile.loadedLOD = -1;
     }
 
@@ -1004,10 +1016,25 @@ void drawOverlay() {
 
     text(12, 22, status);
 
+        char roadStatus[192];
+
+    std::sprintf(
+        roadStatus,
+        "Roads: %s | %lu drawn | %lu triangles | %u indexed tiles | %ld load errors",
+        roads::enabled ? "on" : "off",
+        roads::drawnRoads,
+        roads::drawnTriangles,
+        roads::indexedTileCount(),
+        roads::failedLoadCount()
+    );
+
+    text(12, 190, roadStatus);
+
+
     if (helpVisible) {
         text(
             12, 46,
-            "Tab: camera  F1: help  F2: wireframe  F3: vegetation  F4: buildings"
+            "Tab: camera  F1: help  F2: wireframe  F3: vegetation  F4: buildings F6: roads"
         );
         text(
             12, 66,
@@ -1185,6 +1212,23 @@ void render() {
     glDisableClientState(GL_NORMAL_ARRAY);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
+    // Render roads before buildings or vegetation
+    roads::beginFrame();
+
+    for (size_t i = 0; i < tiles.size(); ++i) {
+        if (!tiles[i].roadsData)
+            continue;
+
+        roads::render(
+            tiles[i].roadsData,
+            camera.x, camera.y, camera.z,
+            originX, originY, originZ,
+            planes,
+            wireframe
+        );
+    }
+
+
     // Opaque buildings must be drawn before alpha-tested plants.
     // Building culling uses complete building bounds, rather than merely
     // the terrain tile's rectangular footprint.
@@ -1309,6 +1353,9 @@ LRESULT CALLBACK windowProc(
 
             if (wParam == VK_F5)
                 focusBuildingSample();
+
+            if (wParam == VK_F6)
+                roads::enabled = !roads::enabled;
 
             if (wParam == VK_TAB)
                 switchCamera();
@@ -1755,6 +1802,44 @@ int WINAPI WinMain(
         buildings::enabled = false;
     }
 
+        roads::setPreset(preset);
+
+    std::string roadError;
+
+    if (!roads::initialize(
+        roadsLocation,
+        roadError
+    )) {
+        MessageBoxA(
+            windowHandle,
+            roadError.c_str(),
+            "Road initialization failed",
+            MB_OK | MB_ICONWARNING
+        );
+
+        roads::enabled = false;
+    }
+
+    unsigned int matchedRoadTiles = 0;
+
+    for (size_t i = 0; i < tiles.size(); ++i) {
+        tiles[i].roadFilename =
+            roads::filenameForTerrain(tiles[i].filename);
+
+        if (!tiles[i].roadFilename.empty())
+            ++matchedRoadTiles;
+    }
+
+    if (roads::indexedTileCount() > 0 && matchedRoadTiles == 0) {
+        MessageBoxA(
+            windowHandle,
+            "Road files were indexed, but none matched terrain filenames.",
+            "Road tile mapping",
+            MB_OK | MB_ICONWARNING
+        );
+    }
+
+
     unsigned int matchedBuildingTiles = 0;
 
     for (size_t i = 0; i < tiles.size(); ++i) {
@@ -1922,6 +2007,8 @@ int WINAPI WinMain(
         delete results[i].mesh;
         delete results[i].plants;
         delete results[i].structures;
+        delete results[i].roadsData;
+
     }
 
     // Release all resident tile data.
@@ -1929,6 +2016,8 @@ int WINAPI WinMain(
         delete tiles[i].mesh;
         delete tiles[i].plants;
         delete tiles[i].structures;
+        delete tiles[i].roadsData;
+
     }
 
     DeleteCriticalSection(&loaderLock);

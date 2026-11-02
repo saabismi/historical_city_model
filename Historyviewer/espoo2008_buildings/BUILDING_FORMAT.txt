@@ -1,0 +1,26 @@
+BLD2, little endian
+
+Header:
+  char[4] BLD2
+  uint32 building count
+
+Per building:
+  uint16 UTF-8 ID length, followed by ID bytes
+  float64 anchor easting, northing, elevation
+  float32 local minimum X,Y,Z
+  float32 local maximum X,Y,Z
+  uint32 group count
+
+Per group:
+  uint32 category: 1 wall, 2 roof, 3 floor
+  uint32 material ID; 0xFFFFFFFF means untextured
+  uint32 vertex count, divisible by three
+
+Per vertex:
+  float32 position X,Y,Z
+  float32 normal X,Y,Z
+  float32 U,V
+
+Local axes: X east, Y up, Z south.
+Textures repeat; material IDs appear in building_materials.txt.
+Buildings may extend beyond owner-tile boundaries.
