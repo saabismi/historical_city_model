@@ -1239,7 +1239,7 @@ void render() {
     roads::beginFrame();
 
     for (size_t i = 0; i < tiles.size(); ++i) {
-        if (!tileReady(tiles[i]))
+        if (!tileReady(tiles[i]) || !visible(tiles[i]))
             continue;
 
         roads::render(
@@ -1258,7 +1258,7 @@ void render() {
     buildings::beginFrame();
 
     for (size_t i = 0; i < tiles.size(); ++i) {
-        if (!tileReady(tiles[i]))
+        if (!tileReady(tiles[i]) || !visible(tiles[i]))
             continue;
 
         buildings::render(
@@ -1274,13 +1274,15 @@ void render() {
     vegetation::beginFrame();
 
     for (size_t i = 0; i < tiles.size(); ++i) {
-        if (!tileReady(tiles[i]))
+        if (!tileReady(tiles[i]) || !visible(tiles[i]))
             continue;
 
         vegetation::collect(
             tiles[i].plants,
             camera.x, camera.y, camera.z,
             originX, originY, originZ,
+            tiles[i].xmin, tiles[i].ymin,
+            tiles[i].xmax, tiles[i].ymax,
             planes,
             yaw,
             pitch
