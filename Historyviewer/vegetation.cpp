@@ -125,6 +125,12 @@ static std::string fileKey(const std::string& filename) {
     return result;
 }
 
+static bool fileExists(const std::string& filename) {
+    DWORD attributes = GetFileAttributesA(filename.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES
+        && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
 
 // Load the converter's uncompressed 32-bit bottom-origin TGA.
 static GLuint loadTexture(const std::string& filename) {
@@ -296,6 +302,15 @@ bool initialize(const std::string& folder, std::string& error) {
             return false;
         }
 
+        std::string filename = joinPath(folder, vegetationName);
+
+        if (!fileExists(filename)) {
+            std::string warning =
+                "Vegetation file missing, skipping: " + filename + "\n";
+            OutputDebugStringA(warning.c_str());
+            continue;
+        }
+
         std::string key = fileKey(terrainName);
 
         if (tileFiles.find(key) != tileFiles.end()) {
@@ -305,7 +320,7 @@ bool initialize(const std::string& folder, std::string& error) {
             return false;
         }
 
-        tileFiles[key] = joinPath(folder, vegetationName);
+        tileFiles[key] = filename;
     }
 
     batches.resize(assets.size() * 5);
@@ -373,6 +388,7 @@ Data* load(const std::string& filename, bool (*cancelled)()) {
         if (!readBytes(file, &column, 4)
             || !readBytes(file, &row, 4)
             || !readBytes(file, &count, 4)
+            || totalRead > plantCount
             || count > plantCount - totalRead) {
             delete data;
             return 0;

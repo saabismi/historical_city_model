@@ -599,6 +599,15 @@ double tileDistance(const Tile& tile) {
     return std::sqrt(dx*dx + dz*dz);
 }
 
+// A terrain tile is visible only as one atomic scene unit. Optional data is
+// considered ready when no file was indexed for that terrain tile.
+bool tileReady(const Tile& tile) {
+    return tile.mesh
+        && (tile.vegetationFilename.empty() || tile.plants)
+        && (tile.buildingFilename.empty() || tile.structures)
+        && (tile.roadFilename.empty() || tile.roadsData);
+}
+
 // Approximate CPU memory occupied by resident terrain, plants and buildings.
 size_t cacheBytes() {
     size_t bytes = 0;
@@ -751,6 +760,14 @@ void updateStreaming() {
             || (
                 !tile.vegetationFilename.empty()
                 && !tile.plants
+            )
+            || (
+                !tile.buildingFilename.empty()
+                && !tile.structures
+            )
+            || (
+                !tile.roadFilename.empty()
+                && !tile.roadsData
             );
 
         if (distance <= loadRadius
@@ -1178,7 +1195,7 @@ void render() {
     for (size_t i = 0; i < tiles.size(); ++i) {
         Tile& tile = tiles[i];
 
-        if (!tile.mesh || !visible(tile))
+        if (!tileReady(tile) || !visible(tile))
             continue;
 
         Mesh& mesh = *tile.mesh;
@@ -1222,7 +1239,7 @@ void render() {
     roads::beginFrame();
 
     for (size_t i = 0; i < tiles.size(); ++i) {
-        if (!tiles[i].roadsData)
+        if (!tileReady(tiles[i]))
             continue;
 
         roads::render(
@@ -1241,7 +1258,7 @@ void render() {
     buildings::beginFrame();
 
     for (size_t i = 0; i < tiles.size(); ++i) {
-        if (!tiles[i].structures)
+        if (!tileReady(tiles[i]))
             continue;
 
         buildings::render(
@@ -1257,7 +1274,7 @@ void render() {
     vegetation::beginFrame();
 
     for (size_t i = 0; i < tiles.size(); ++i) {
-        if (!tiles[i].plants)
+        if (!tileReady(tiles[i]))
             continue;
 
         vegetation::collect(
