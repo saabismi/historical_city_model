@@ -71,10 +71,7 @@ static bool nearerPlant(
 }
 
 
-static double maximumDistance = 1000; // Vegetation render range.
-static float density = 0.65f;        // Stable instance retention threshold.
 static int minimumLOD = 0;          // Low preset can omit near detail.
-static unsigned long plantBudget = 15000; // Per-frame draw cap.
 
 bool enabled = true;
 unsigned long drawnPlants = 0;
@@ -487,20 +484,11 @@ Data* load(const std::string& filename, bool (*cancelled)()) {
 // Choose practical starting settings; these are not hardware benchmarks.
 void setPreset(int preset) {
     if (preset == 0) {
-        maximumDistance = 350;
-        density = 0.5f;
         minimumLOD = 1;
-        plantBudget = 6000;
     } else if (preset == 1) {
-        maximumDistance = 1000;
-        density = 0.9f;
         minimumLOD = 0;
-        plantBudget = 15000;
     } else {
-        maximumDistance = 10000;
-        density = 1.0f;
         minimumLOD = 0;
-        plantBudget = 30000;
     }
 }
 
@@ -668,9 +656,6 @@ void collect(
 ) {
     if (!enabled || !data) return;
 
-    const double maximumDistanceSquared =
-        maximumDistance * maximumDistance;
-
     for (std::size_t i = 0; i < data->cells.size(); ++i) {
         const Cell& cell = data->cells[i];
 
@@ -685,18 +670,8 @@ void collect(
         if (!visibleBox(x0, y0, z0, x1, y1, z1, planes))
             continue;
 
-        double dx = std::max(x0, std::max(0.0, -x1));
-        double dy = std::max(y0, std::max(0.0, -y1));
-        double dz = std::max(z0, std::max(0.0, -z1));
-
-        if (dx*dx + dy*dy + dz*dz > maximumDistanceSquared)
-            continue;
-
         for (std::size_t j = 0; j < cell.plants.size(); ++j) {
             const Plant& plant = cell.plants[j];
-
-            // Apply stable preset density before creating candidates.
-            if (plant.priority > density) continue;
 
             const Asset& asset = assets[plant.asset];
             double x =
@@ -738,9 +713,6 @@ void collect(
             double distanceSquared =
                 x*x + centerY*centerY + z*z;
 
-            if (distanceSquared > maximumDistanceSquared)
-                continue;
-
             PlantCandidate candidate;
             candidate.plant = &plant;
             candidate.x = x;
@@ -755,28 +727,13 @@ void collect(
     }
 }
 
-// Select the nearest eligible plants and build texture-grouped geometry.
-// The budget now applies globally across all loaded vegetation tiles.
+// Build texture-grouped geometry for every visible plant.
 static void buildSelectedBatches() {
-    std::size_t selectedCount = std::min(
-        candidates.size(),
-        (std::size_t)plantBudget
-    );
+    std::size_t selectedCount = candidates.size();
 
     if (selectedCount == 0) return;
 
-    // If over budget, partition so the first selectedCount entries are
-    // the nearest plants, without sorting every distant candidate.
-    if (selectedCount < candidates.size()) {
-        std::nth_element(
-            candidates.begin(),
-            candidates.begin() + selectedCount,
-            candidates.end(),
-            nearerPlant
-        );
-    }
-
-    // Sort the selected portion for predictable nearest-first processing.
+    // Keep near-first order for stable rendering and diagnostics.
     std::sort(
         candidates.begin(),
         candidates.begin() + selectedCount,
