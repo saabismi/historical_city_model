@@ -407,10 +407,10 @@ Data* load(const std::string& filename, bool (*cancelled)()) {
                     || values[k] < -1e20f || values[k] > 1e20f)
                     valid = false;
 
-            if (!valid || values[3] <= 0 || values[4] <= 0) {
-                delete data;
-                return 0;
-            }
+            // Keep the rest of the tile renderable when one generated
+            // placement is corrupt or references a missing asset.
+            if (!valid || values[3] <= 0 || values[4] <= 0)
+                continue;
 
             plant.east = values[0];
             plant.south = values[1];
