@@ -57,6 +57,10 @@ Data* load(const std::string& filename, bool (*cancelled)());
 // Configure range, density, and available LODs for Low/Medium/High.
 void setPreset(int preset);
 
+// Configure the number of intersecting near/medium billboard cards.
+// The current presets use 2 for Low and 3 for Medium/High.
+void setBillboardCount(int count);
+
 // Begin one frame's vegetation collection.
 void beginFrame();
 

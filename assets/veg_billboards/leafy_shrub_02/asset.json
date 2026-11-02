@@ -13,16 +13,18 @@
   "lods": [
     {
       "name": "near",
-      "representation": "crossed_cards",
+      "representation": "three_intersecting_cards",
       "front": "near_front.png",
       "side": "near_side.png",
+      "third": "near_third.png",
       "suggested_max_distance_metres": 60
     },
     {
       "name": "medium",
-      "representation": "crossed_cards",
+      "representation": "three_intersecting_cards",
       "front": "medium_front.png",
       "side": "medium_side.png",
+      "third": "medium_third.png",
       "suggested_max_distance_metres": 150
     },
     {

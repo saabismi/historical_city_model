@@ -15,8 +15,8 @@ Arguments:
     --overwrite       Allow replacement of generated files.
 
 Each asset contains:
-    near_front.png, near_side.png
-    medium_front.png, medium_side.png
+    near_front.png, near_side.png, near_third.png
+    medium_front.png, medium_side.png, medium_third.png
     far.png
     preview.png       Shows the intended world-space proportions.
     asset.json       Dimensions, pivot, and LOD definitions.
@@ -568,13 +568,16 @@ def generate_asset(species, spec, variant, seed, size, output):
 
     structure = make_structure(spec, seed)
     front = render_view(species, spec, structure, size, 0)
-    side = render_view(species, spec, structure, size, math.pi / 2)
+    side = render_view(species, spec, structure, size, math.pi / 3)
+    third = render_view(species, spec, structure, size, 2 * math.pi / 3)
 
     images = {
         "near_front.png": bleed_edges(front),
         "near_side.png": bleed_edges(side),
+        "near_third.png": bleed_edges(third),
         "medium_front.png": reduced_texture(front, size // 2),
         "medium_side.png": reduced_texture(side, size // 2),
+        "medium_third.png": reduced_texture(third, size // 2),
         "far.png": reduced_texture(front, size // 4),
     }
 
@@ -595,16 +598,18 @@ def generate_asset(species, spec, variant, seed, size, output):
         "lods": [
             {
                 "name": "near",
-                "representation": "crossed_cards",
+                "representation": "three_intersecting_cards",
                 "front": "near_front.png",
                 "side": "near_side.png",
+                "third": "near_third.png",
                 "suggested_max_distance_metres": 60,
             },
             {
                 "name": "medium",
-                "representation": "crossed_cards",
+                "representation": "three_intersecting_cards",
                 "front": "medium_front.png",
                 "side": "medium_side.png",
+                "third": "medium_third.png",
                 "suggested_max_distance_metres": 150,
             },
             {

@@ -22,13 +22,15 @@ using namespace std;
 
 namespace vegetation {
 
+static const int TEXTURES_PER_ASSET = 7;
+
 // Shared appearance data for one species variant.
 struct Asset {
     float width;       // Unscaled card width in metres.
     float height;      // Unscaled card height in metres.
     float pivotU;      // Horizontal trunk-base image coordinate.
     float pivotV;      // Vertical trunk-base image coordinate.
-    GLuint texture[5]; // Near front/side, medium front/side, far.
+    GLuint texture[7]; // Near 3 cards, medium 3 cards, far.
 };
 
 // Interleaved vertex format for texture-grouped CPU arrays.
@@ -72,6 +74,7 @@ static bool nearerPlant(
 
 
 static int minimumLOD = 0;          // Low preset can omit near detail.
+static int billboardCount = 3;      // Low uses 2; higher presets use 3.
 
 bool enabled = true;
 unsigned long drawnPlants = 0;
@@ -202,7 +205,7 @@ bool initialize(const std::string& folder, std::string& error) {
     std::ifstream file((folder + "\\assets.txt").c_str());
     std::string line;
 
-    if (!readLine(file, line) || line != "VEGETATION_ASSETS_V1") {
+    if (!readLine(file, line) || line != "VEGETATION_ASSETS_V2") {
         error = "Cannot read vegetation assets.txt.";
         return false;
     }
@@ -245,7 +248,7 @@ bool initialize(const std::string& folder, std::string& error) {
             return false;
         }
 
-        for (int texture = 0; texture < 5; ++texture) {
+        for (int texture = 0; texture < TEXTURES_PER_ASSET; ++texture) {
             if (!readLine(file, line)) {
                 error = "Missing vegetation texture path.";
                 shutdown();
@@ -320,7 +323,7 @@ bool initialize(const std::string& folder, std::string& error) {
         tileFiles[key] = filename;
     }
 
-    batches.resize(assets.size() * 5);
+    batches.resize(assets.size() * TEXTURES_PER_ASSET);
     glBindTexture(GL_TEXTURE_2D, 0);
     return true;
 }
@@ -485,11 +488,18 @@ Data* load(const std::string& filename, bool (*cancelled)()) {
 void setPreset(int preset) {
     if (preset == 0) {
         minimumLOD = 1;
+        billboardCount = 2;
     } else if (preset == 1) {
         minimumLOD = 0;
+        billboardCount = 3;
     } else {
         minimumLOD = 0;
+        billboardCount = 3;
     }
+}
+
+void setBillboardCount(int count) {
+    billboardCount = std::max(2, std::min(3, count));
 }
 
 // Clear frame data while retaining allocated capacity.
@@ -714,11 +724,12 @@ static void buildSelectedBatches() {
             lod = 2;
         }
 
-        std::size_t firstTexture = plant.asset * 5;
+        std::size_t firstTexture =
+            plant.asset * TEXTURES_PER_ASSET;
 
         if (lod < 2) {
             std::size_t slot =
-                firstTexture + (lod == 0 ? 0 : 2);
+                firstTexture + (lod == 0 ? 0 : 3);
 
             double cosine = std::cos(plant.yaw);
             double sine = std::sin(plant.yaw);
@@ -738,9 +749,21 @@ static void buildSelectedBatches() {
                 candidate.x, candidate.y, candidate.z,
                 -sine, cosine
             );
+
+            if (billboardCount >= 3) {
+                double thirdAngle = plant.yaw + 1.0471975512;
+                appendCard(
+                    batches[slot + 2],
+                    asset,
+                    plant,
+                    candidate.x, candidate.y, candidate.z,
+                    std::cos(thirdAngle),
+                    std::sin(thirdAngle)
+                );
+            }
         } else {
             appendFacingCard(
-                batches[firstTexture + 4],
+                batches[firstTexture + 6],
                 asset,
                 plant,
                 candidate.x, candidate.y, candidate.z
@@ -788,7 +811,9 @@ void draw() {
         std::vector<BillboardVertex>& batch = batches[i];
         if (batch.empty()) continue;
 
-        GLuint texture = assets[i/5].texture[i%5];
+        GLuint texture =
+            assets[i / TEXTURES_PER_ASSET]
+                .texture[i % TEXTURES_PER_ASSET];
         glBindTexture(GL_TEXTURE_2D, texture);
 
         glVertexPointer(
@@ -813,7 +838,7 @@ void draw() {
 // Resident Data objects are owned and deleted by main.cpp.
 void shutdown() {
     for (std::size_t i = 0; i < assets.size(); ++i)
-        for (int j = 0; j < 5; ++j)
+        for (int j = 0; j < 7; ++j)
             if (assets[i].texture[j])
                 glDeleteTextures(1, &assets[i].texture[j]);
 
