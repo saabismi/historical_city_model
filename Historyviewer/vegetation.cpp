@@ -113,6 +113,18 @@ static std::string basename(const std::string& filename) {
         ? filename : filename.substr(position + 1);
 }
 
+// Case-insensitive terrain filename key, matching buildings and roads.
+static std::string fileKey(const std::string& filename) {
+    std::string result = basename(filename);
+
+    for (std::size_t i = 0; i < result.size(); ++i) {
+        if (result[i] >= 'A' && result[i] <= 'Z')
+            result[i] = (char)(result[i] - 'A' + 'a');
+    }
+
+    return result;
+}
+
 
 // Load the converter's uncompressed 32-bit bottom-origin TGA.
 static GLuint loadTexture(const std::string& filename) {
@@ -284,9 +296,16 @@ bool initialize(const std::string& folder, std::string& error) {
             return false;
         }
 
-        tileFiles[basename(terrainName)] = joinPath(
-            folder, vegetationName
-        );
+        std::string key = fileKey(terrainName);
+
+        if (tileFiles.find(key) != tileFiles.end()) {
+            error = "Duplicate terrain entry in vegetation_index.txt:\n"
+                + terrainName;
+            shutdown();
+            return false;
+        }
+
+        tileFiles[key] = joinPath(folder, vegetationName);
     }
 
     batches.resize(assets.size() * 5);
@@ -297,7 +316,7 @@ bool initialize(const std::string& folder, std::string& error) {
 
 std::string filenameForTerrain(const std::string& terrainFilename) {
     std::map<std::string, std::string>::const_iterator found =
-        tileFiles.find(basename(terrainFilename));
+        tileFiles.find(fileKey(terrainFilename));
 
     return found == tileFiles.end() ? "" : found->second;
 }
@@ -885,4 +904,3 @@ void shutdown() {
 }
 
 } // namespace vegetation
-

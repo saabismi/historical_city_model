@@ -690,7 +690,8 @@ void updateStreaming() {
         for (size_t i = 0; i < tiles.size(); ++i) {
             if (tiles[i].mesh
                 || tiles[i].plants
-                || tiles[i].structures) {
+                || tiles[i].structures
+                || tiles[i].roadsData) {
                 double distance = tileDistance(tiles[i]);
 
                 if (distance > farthestDistance) {
@@ -745,7 +746,12 @@ void updateStreaming() {
         tile.wantedLOD = lod;
 
         bool needs =
-            !tile.mesh || tile.loadedLOD != lod;
+            !tile.mesh
+            || tile.loadedLOD != lod
+            || (
+                !tile.vegetationFilename.empty()
+                && !tile.plants
+            );
 
         if (distance <= loadRadius
             && needs
