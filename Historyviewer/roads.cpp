@@ -418,7 +418,7 @@ static bool readData(
                 }
 
                 for (unsigned int k = start; k < start + block; ++k) {
-                    const Vertex& vertex = group.vertices[k];
+                    Vertex& vertex = group.vertices[k];
 
                     if (!finiteValue(vertex.x)
                         || !finiteValue(vertex.y)
@@ -430,6 +430,9 @@ static bool readData(
                         || !finiteValue(vertex.v)) {
                         return false;
                     }
+
+                    // Correct the texture orientation at load time.
+                    std::swap(vertex.u, vertex.v);
                 }
 
                 start += block;
