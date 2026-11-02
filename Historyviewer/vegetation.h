@@ -66,8 +66,6 @@ void collect(
     const Data* data,
     double cameraX, double cameraY, double cameraZ,
     double originX, double originY, double originZ,
-    double tileXmin, double tileYmin,
-    double tileXmax, double tileYmax,
     const double planes[6][4],
     double cameraYaw,
     double cameraPitch

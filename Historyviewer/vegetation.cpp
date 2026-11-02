@@ -662,8 +662,6 @@ void collect(
     const Data* data,
     double cameraX, double cameraY, double cameraZ,
     double originX, double originY, double originZ,
-    double tileXmin, double tileYmin,
-    double tileXmax, double tileYmax,
     const double planes[6][4],
     double cameraYaw,
     double cameraPitch
@@ -701,20 +699,8 @@ void collect(
             if (plant.priority > density) continue;
 
             const Asset& asset = assets[plant.asset];
-            double absoluteEasting = data->xmin + plant.east;
-            double absoluteNorthing = data->ymax - plant.south;
-
-            // Vegetation belongs to its owning terrain tile. Never let
-            // malformed or buffered placement data leak into neighbours.
-            if (absoluteEasting < tileXmin
-                || absoluteEasting >= tileXmax
-                || absoluteNorthing < tileYmin
-                || absoluteNorthing >= tileYmax) {
-                continue;
-            }
-
             double x =
-                absoluteEasting - originX - cameraX;
+                data->xmin + plant.east - originX - cameraX;
             double y =
                 plant.elevation - originZ - cameraY;
             double z =

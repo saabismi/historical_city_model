@@ -1281,8 +1281,6 @@ void render() {
             tiles[i].plants,
             camera.x, camera.y, camera.z,
             originX, originY, originZ,
-            tiles[i].xmin, tiles[i].ymin,
-            tiles[i].xmax, tiles[i].ymax,
             planes,
             yaw,
             pitch
