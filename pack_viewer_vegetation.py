@@ -2,17 +2,21 @@
 """
 Package generated vegetation for the legacy C++ viewer.
 
-The package contains VEG1 placement files copied from the input manifest and
-VEGETATION_ASSETS_V4 metadata. Each asset has twelve textures: four upright
-near cards, four upright medium cards, and four reduced upright far cards.
-The viewer selects two, three, or four cards according to the active preset.
+The package combines renderer-neutral VPL1 placement files with an appearance
+library and emits VEG1 placement files plus VEGETATION_ASSETS_V4 metadata.
+Each asset has twelve textures: four upright near cards, four upright medium
+cards, and four reduced upright far cards. The viewer selects two, three, or
+four cards according to the active preset.
 
 Usage:
     python pack_viewer_vegetation.py -i Historyviewer/espoo2008_veg_tiles_new -o Historyviewer/espoo2008_veg_viewer_new
 
 Arguments:
-    -i, --input       Folder containing vegetation_manifest.json.
+    -i, --input       Folder containing vegetation_manifest.json and
+                      placements/*.vpl (or legacy vegetation/*.veg).
     -o, --output      New or empty packaged-output folder.
+    --assets          Appearance library containing vegetation.json and
+                      generated asset definitions; required for VPL1.
     --texture-size   Maximum near texture dimension; default 256.
 
 Requires Pillow:
@@ -59,12 +63,113 @@ def write_tga(image, destination):
         handle.write(data)
 
 
+def load_asset_table(source, manifest, override):
+    """Load appearance definitions independently from placement tiles."""
+    if override:
+        library = json.loads(
+            (override / "vegetation.json").read_text(encoding="utf-8")
+        )
+        return [
+            {
+                "numeric_id": numeric_id,
+                "id": item["id"],
+                "definition": str(
+                    (override / item["definition"]).resolve()
+                ),
+            }
+            for numeric_id, item in enumerate(library["assets"])
+        ]
+
+    return sorted(
+        manifest["asset_table"],
+        key=lambda item: item["numeric_id"],
+    )
+
+
+def read_vpl(path, asset_info):
+    """Read VPL1 placements and convert physical dimensions at export time."""
+    with path.open("rb") as handle:
+        header = handle.read(4)
+        if header != b"VPL1":
+            raise ValueError(f"Unsupported placement format: {path}")
+
+        xmin, ymax, cell_size, cell_count, plant_count = struct.unpack(
+            "<2df2I", handle.read(struct.calcsize("<2df2I"))
+        )
+        cells = []
+        total = 0
+
+        for _ in range(cell_count):
+            column, row, count = struct.unpack(
+                "<3I", handle.read(struct.calcsize("<3I"))
+            )
+            plants = []
+            for _ in range(count):
+                raw_key, east, south, elevation, height, width_multiplier, yaw, tint, priority = struct.unpack(
+                    "<64s8f", handle.read(struct.calcsize("<64s8f"))
+                )
+                key = raw_key.split(b"\0", 1)[0].decode("utf-8")
+                if key not in asset_info:
+                    raise ValueError(
+                        f"Placement references missing asset key {key!r}: {path}"
+                    )
+                numeric_id, plant_height = asset_info[key]
+                plants.append((
+                    numeric_id,
+                    east,
+                    south,
+                    elevation,
+                    height / plant_height,
+                    (height / plant_height) * width_multiplier,
+                    yaw,
+                    tint,
+                    priority,
+                ))
+            cells.append((column, row, plants))
+            total += count
+
+        if total != plant_count:
+            raise ValueError(f"Invalid VPL1 plant count: {path}")
+
+    return xmin, ymax, cell_size, cells, plant_count
+
+
+def write_veg(path, placement):
+    """Write viewer VEG1 data from canonical VPL1 placement records."""
+    xmin, ymax, cell_size, cells, plant_count = placement
+    with path.open("wb") as handle:
+        handle.write(b"VEG1")
+        handle.write(struct.pack(
+            "<2df2I",
+            xmin, ymax, cell_size, len(cells), plant_count,
+        ))
+        for column, row, plants in cells:
+            handle.write(struct.pack("<3I", column, row, len(plants)))
+            for asset_id, east, south, elevation, height, width, yaw, tint, priority in plants:
+                handle.write(struct.pack(
+                    "<I8f",
+                    asset_id,
+                    east,
+                    south,
+                    elevation,
+                    height,
+                    width,
+                    yaw,
+                    tint,
+                    priority,
+                ))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Package vegetation for the legacy viewer."
     )
     parser.add_argument("-i", "--input", required=True)
     parser.add_argument("-o", "--output", required=True)
+    parser.add_argument(
+        "--assets",
+        help="Appearance library folder; required when exporting VPL1.",
+    )
     parser.add_argument("--texture-size", type=int, default=256)
     args = parser.parse_args()
 
@@ -89,10 +194,11 @@ def main():
     textures.mkdir(parents=True)
     placements.mkdir()
 
-    asset_table = sorted(
-        manifest["asset_table"],
-        key=lambda item: item["numeric_id"],
+    asset_folder = (
+        Path(args.assets).resolve()
+        if args.assets else None
     )
+    asset_table = load_asset_table(source, manifest, asset_folder)
 
     if [item["numeric_id"] for item in asset_table] != list(
         range(len(asset_table))
@@ -179,10 +285,39 @@ def main():
 
     tile_records = []
 
+    asset_info = {}
+    for item in asset_table:
+        definition = Path(item["definition"])
+        if not definition.is_absolute():
+            definition = source / definition
+        asset = json.loads(
+            definition.read_text(encoding="utf-8")
+        )
+        asset_info[item["id"]] = (
+            item["numeric_id"],
+            asset["plant_height_metres"],
+        )
+
     for tile in manifest["tiles"]:
-        source_file = source / tile["vegetation_filename"]
+        placement_name = tile.get(
+            "placement_filename",
+            tile.get("vegetation_filename"),
+        )
+        if not placement_name:
+            raise ValueError("Manifest tile has no placement filename.")
+        source_file = source / placement_name
         filename = source_file.name
-        shutil.copy2(source_file, placements / filename)
+        if source_file.suffix.lower() == ".vpl":
+            if not asset_folder and manifest.get("format") == "vegetation_manifest_v2":
+                raise ValueError(
+                    "VPL1 export requires --assets pointing to the appearance library."
+                )
+            placement = read_vpl(source_file, asset_info)
+            output_name = source_file.with_suffix(".veg").name
+            write_veg(placements / output_name, placement)
+            filename = output_name
+        else:
+            shutil.copy2(source_file, placements / filename)
 
         # Match using basename: terrain_index can omit water-only tiles.
         terrain_name = Path(tile["terrain_filename"]).name

@@ -43,14 +43,16 @@ from PIL import Image, ImageDraw
 
 
 # Tree heights and widths are measured in metres.
-# Width is derived from height * width_ratio.
+# Width is derived from height * width_ratio. The ratio describes the
+# foliage/branch envelope; trunks keep their separate species-specific
+# diameter ranges.
 #
 # All structure coordinates below use actual metre units. This keeps branch
 # lengths, crown widths, and trunk thickness consistent between projections.
 SPECIES = {
     "birch": {
         "height": (23, 30),
-        "width_ratio": (0.28, 0.36),
+        "width_ratio": (0.36, 0.46),
         "crown_bottom": (0.32, 0.40),
         "form": "birch",
         "foliage": (88, 132, 57),
@@ -60,7 +62,7 @@ SPECIES = {
     },
     "aspen": {
         "height": (24, 32),
-        "width_ratio": (0.23, 0.31),
+        "width_ratio": (0.31, 0.40),
         "crown_bottom": (0.40, 0.48),
         "form": "aspen",
         "foliage": (90, 137, 65),
@@ -70,7 +72,7 @@ SPECIES = {
     },
     "alder": {
         "height": (17, 24),
-        "width_ratio": (0.32, 0.42),
+        "width_ratio": (0.40, 0.52),
         "crown_bottom": (0.29, 0.38),
         "form": "alder",
         "foliage": (61, 109, 49),
@@ -80,7 +82,7 @@ SPECIES = {
     },
     "pine": {
         "height": (24, 32),
-        "width_ratio": (0.22, 0.30),
+        "width_ratio": (0.30, 0.40),
         "crown_bottom": (0.60, 0.69),
         "form": "pine",
         "foliage": (55, 95, 66),
@@ -90,7 +92,7 @@ SPECIES = {
     },
     "spruce": {
         "height": (25, 34),
-        "width_ratio": (0.17, 0.23),
+        "width_ratio": (0.24, 0.32),
         "crown_bottom": (0.17, 0.25),
         "form": "spruce",
         "foliage": (40, 82, 55),
@@ -697,6 +699,27 @@ def main():
 
     (output / "vegetation.json").write_text(
         json.dumps(library, indent=2), encoding="utf-8"
+    )
+
+    species_catalog = {
+        "format": "vegetation_species_catalog_v1",
+        "species": [
+            {
+                "id": species,
+                "height_range_metres": list(spec["height"]),
+                "foliage_width_ratio": list(spec["width_ratio"]),
+                "asset_ids": [
+                    asset["id"]
+                    for asset in assets
+                    if asset["id"].startswith(species + "_")
+                ],
+            }
+            for species, spec in SPECIES.items()
+        ],
+    }
+    (output / "vegetation_species.json").write_text(
+        json.dumps(species_catalog, indent=2),
+        encoding="utf-8",
     )
 
     print(f"\nGenerated {len(assets)} assets in {output}")
