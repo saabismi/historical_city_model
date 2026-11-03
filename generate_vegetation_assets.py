@@ -18,6 +18,7 @@ Each asset contains:
     near_front.png, near_side.png, near_third.png
     medium_front.png, medium_side.png, medium_third.png
     far.png
+    canopy.png
     preview.png       Shows the intended world-space proportions.
     asset.json       Dimensions, pivot, and LOD definitions.
 
@@ -474,6 +475,69 @@ def render_view(species, spec, structure, size, angle):
     return image.resize((size, size), Image.Resampling.LANCZOS)
 
 
+def render_canopy(species, spec, structure, size):
+    """Render a horizontal orthographic canopy view for overhead cameras."""
+    factor = 2
+    pixels = size * factor
+    image = Image.new("RGBA", (pixels, pixels), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+
+    card_width = structure["card_width"]
+
+    def project(position):
+        x, y, _ = position
+        return (
+            (0.5 + x / card_width) * pixels,
+            (0.5 + y / card_width) * pixels,
+        )
+
+    # Branches and trunk remain visible through gaps in the foliage.
+    for branch in structure["branches"]:
+        points = branch["points"]
+        for index in range(len(points) - 1):
+            start = project(points[index])
+            end = project(points[index + 1])
+            thickness = branch["thickness"] * (1 - index * 0.08)
+            pixel_width = max(1, round(thickness / card_width * pixels))
+            draw.line(
+                [start, end],
+                fill=spec["bark"] + (255,),
+                width=pixel_width,
+            )
+
+    # Higher clumps are drawn last so the canopy has a natural layered shape.
+    ordered = sorted(
+        structure["clusters"],
+        key=lambda cluster: cluster["position"][2],
+    )
+    for cluster in ordered:
+        rng = random.Random(cluster["seed"])
+        center_x, center_y = project(cluster["position"])
+        rx, ry, _ = cluster["radii"]
+        horizontal_x = rx / card_width * pixels
+        horizontal_y = ry / card_width * pixels
+
+        for _ in range(48 if spec["form"] == "spruce" else 60):
+            theta = rng.uniform(0, math.tau)
+            distance = math.sqrt(rng.random())
+            px = center_x + math.cos(theta) * distance * horizontal_x
+            py = center_y + math.sin(theta) * distance * horizontal_y
+            patch_width = horizontal_x * rng.uniform(0.10, 0.23)
+            patch_height = horizontal_y * rng.uniform(0.10, 0.23)
+            color = tint(spec["foliage"], rng.uniform(0.78, 1.18))
+            draw.ellipse(
+                (
+                    px - max(1, patch_width),
+                    py - max(1, patch_height),
+                    px + max(1, patch_width),
+                    py + max(1, patch_height),
+                ),
+                fill=color + (255,),
+            )
+
+    return image.resize((size, size), Image.Resampling.LANCZOS)
+
+
 def bleed_edges(image, iterations=8):
     """Extend foliage RGB into transparent pixels without changing alpha."""
     array = np.array(image, dtype=np.uint8)
@@ -570,6 +634,7 @@ def generate_asset(species, spec, variant, seed, size, output):
     front = render_view(species, spec, structure, size, 0)
     side = render_view(species, spec, structure, size, math.pi / 3)
     third = render_view(species, spec, structure, size, 2 * math.pi / 3)
+    canopy = render_canopy(species, spec, structure, size)
 
     images = {
         "near_front.png": bleed_edges(front),
@@ -579,6 +644,7 @@ def generate_asset(species, spec, variant, seed, size, output):
         "medium_side.png": reduced_texture(side, size // 2),
         "medium_third.png": reduced_texture(third, size // 2),
         "far.png": reduced_texture(front, size // 4),
+        "canopy.png": bleed_edges(canopy),
     }
 
     for name, image in images.items():
@@ -595,6 +661,7 @@ def generate_asset(species, spec, variant, seed, size, output):
         "pivot_uv": [0.5, 0.02],
         "alpha_cutoff": 0.5,
         "double_sided": True,
+        "canopy": "canopy.png",
         "lods": [
             {
                 "name": "near",
@@ -676,7 +743,7 @@ def main():
             "Use card dimensions and pivot from asset.json.",
             "preview.png displays the intended card proportions.",
             "Separate texture LODs are not OpenGL mipmap chains.",
-            "Overhead canopy representation is not included.",
+            "canopy.png is a horizontal overhead representation.",
             "World placement and viewer integration are separate.",
         ],
     }

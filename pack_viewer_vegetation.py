@@ -112,8 +112,8 @@ def main():
         asset = json.loads(definition.read_text(encoding="utf-8"))
         lods = asset["lods"]
 
-        # Seven textures used by the renderer:
-        # near front/side/third, medium front/side/third, far front.
+        # Eight textures used by the renderer:
+        # near front/side/third, medium front/side/third, far front, canopy.
         entries = [
             (lods[0]["front"], size),
             (lods[0]["side"], size),
@@ -122,6 +122,7 @@ def main():
             (lods[1]["side"], size // 2),
             (lods[1]["third"], size // 2),
             (lods[2]["front"], size // 4),
+            (asset["canopy"], size),
         ]
 
         texture_paths = []
@@ -157,7 +158,7 @@ def main():
     with (output / "assets.txt").open(
         "w", encoding="utf-8", newline="\n"
     ) as handle:
-        handle.write("VEGETATION_ASSETS_V2\n")
+        handle.write("VEGETATION_ASSETS_V3\n")
         handle.write(f"{len(records)}\n")
 
         for asset_id, width, height, pu, pv, paths in records:

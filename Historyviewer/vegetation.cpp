@@ -22,7 +22,7 @@ using namespace std;
 
 namespace vegetation {
 
-static const int TEXTURES_PER_ASSET = 7;
+static const int TEXTURES_PER_ASSET = 8;
 
 // Shared appearance data for one species variant.
 struct Asset {
@@ -30,7 +30,7 @@ struct Asset {
     float height;      // Unscaled card height in metres.
     float pivotU;      // Horizontal trunk-base image coordinate.
     float pivotV;      // Vertical trunk-base image coordinate.
-    GLuint texture[7]; // Near 3 cards, medium 3 cards, far.
+    GLuint texture[8]; // Near 3, medium 3, far, and horizontal canopy.
 };
 
 // Interleaved vertex format for texture-grouped CPU arrays.
@@ -205,10 +205,14 @@ bool initialize(const std::string& folder, std::string& error) {
     std::ifstream file((folder + "\\assets.txt").c_str());
     std::string line;
 
-    if (!readLine(file, line) || line != "VEGETATION_ASSETS_V2") {
+    if (!readLine(file, line)
+        || (line != "VEGETATION_ASSETS_V2"
+            && line != "VEGETATION_ASSETS_V3")) {
         error = "Cannot read vegetation assets.txt.";
         return false;
     }
+    const bool hasCanopy = line == "VEGETATION_ASSETS_V3";
+    const int fileTexturesPerAsset = hasCanopy ? 8 : 7;
 
     unsigned int count = 0;
     if (!readLine(file, line)) return false;
@@ -248,7 +252,7 @@ bool initialize(const std::string& folder, std::string& error) {
             return false;
         }
 
-        for (int texture = 0; texture < TEXTURES_PER_ASSET; ++texture) {
+        for (int texture = 0; texture < fileTexturesPerAsset; ++texture) {
             if (!readLine(file, line)) {
                 error = "Missing vegetation texture path.";
                 shutdown();
@@ -575,7 +579,6 @@ static void appendFacingCard(
         ny /= length;
         nz /= length;
     }
-
     // Horizontal right vector perpendicular to the facing direction.
     double rx = nz;
     double ry = 0;
@@ -627,6 +630,36 @@ static void appendFacingCard(
         vertex.v = textureV[i];
         vertex.r = vertex.g = vertex.b = plant.tint;
 
+        batch.push_back(vertex);
+    }
+}
+
+
+// Append the horizontal canopy card used for overhead views.
+static void appendCanopy(
+    std::vector<BillboardVertex>& batch,
+    const Asset& asset,
+    const Plant& plant,
+    double x, double y, double z
+) {
+    double width = asset.width * plant.widthScale;
+    double height = asset.height * plant.heightScale;
+    double canopyY = y + (1.0 - asset.pivotV) * height;
+    double half = width * 0.5;
+
+    const double px[4] = { -half, half, half, -half };
+    const double pz[4] = { -half, -half, half, half };
+    const float u[4] = { 0, 1, 1, 0 };
+    const float v[4] = { 0, 0, 1, 1 };
+
+    for (int i = 0; i < 4; ++i) {
+        BillboardVertex vertex;
+        vertex.x = (float)(x + px[i]);
+        vertex.y = (float)canopyY;
+        vertex.z = (float)(z + pz[i]);
+        vertex.u = u[i];
+        vertex.v = v[i];
+        vertex.r = vertex.g = vertex.b = plant.tint;
         batch.push_back(vertex);
     }
 }
@@ -769,6 +802,15 @@ static void buildSelectedBatches() {
                 candidate.x, candidate.y, candidate.z
             );
         }
+
+        if (asset.texture[7]) {
+            appendCanopy(
+                batches[firstTexture + 7],
+                asset,
+                plant,
+                candidate.x, candidate.y, candidate.z
+            );
+        }
     }
 
     drawnPlants = (unsigned long)selectedCount;
@@ -838,7 +880,7 @@ void draw() {
 // Resident Data objects are owned and deleted by main.cpp.
 void shutdown() {
     for (std::size_t i = 0; i < assets.size(); ++i)
-        for (int j = 0; j < 7; ++j)
+        for (int j = 0; j < 8; ++j)
             if (assets[i].texture[j])
                 glDeleteTextures(1, &assets[i].texture[j]);
 
