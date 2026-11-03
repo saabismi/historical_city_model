@@ -2,6 +2,13 @@
 """
 Package generated vegetation for the legacy C++ viewer.
 
+The package contains VEG1 placement files copied from the input manifest and
+VEGETATION_ASSETS_V3 metadata. Each asset has eight textures: three upright
+near cards, three upright medium cards, one reduced upright far card, and one
+horizontal canopy card for overhead views. The C++ viewer keeps V2 packages
+compatible, but this packer requires the canopy field produced by the updated
+asset generator.
+
 Usage:
     python pack_viewer_vegetation.py \
         -i 2008_vegetation_test -o 2008_vegetation_viewer
@@ -15,7 +22,7 @@ Requires Pillow:
     pip install pillow
 
 Output:
-    assets.txt
+    assets.txt                 VEGETATION_ASSETS_V3 metadata.
     vegetation_index.txt
     textures/*.tga
     vegetation/*.veg

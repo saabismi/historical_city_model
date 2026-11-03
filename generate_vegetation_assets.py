@@ -3,8 +3,8 @@
 Generate stylized Finnish vegetation billboard assets automatically.
 
 Usage:
-    python generate_vegetation.py -o vegetation_assets
-    python generate_vegetation.py -o vegetation_assets \
+    python generate_vegetation_assets.py -o vegetation_assets
+    python generate_vegetation_assets.py -o vegetation_assets \
         --variants 3 --size 1024 --overwrite
 
 Arguments:
@@ -17,15 +17,18 @@ Arguments:
 Each asset contains:
     near_front.png, near_side.png, near_third.png
     medium_front.png, medium_side.png, medium_third.png
-    far.png
-    canopy.png
+    far.png                 Reduced-resolution upright billboard.
+    canopy.png              Horizontal top-canopy card for overhead views.
     preview.png       Shows the intended world-space proportions.
     asset.json       Dimensions, pivot, and LOD definitions.
 
 vegetation.json indexes all generated assets.
 
+Near and medium assets provide three intersecting upright billboard views.
+The canopy is an additional horizontal card and does not replace those views.
 These are procedural visual approximations, not botanical reconstructions.
-Textures use alpha-tested transparency. Viewer integration is separate.
+Textures use alpha-tested transparency. The packer converts these PNGs to
+the viewer's V3 texture package; placement data is handled separately.
 
 Requires: Pillow, NumPy.
 """

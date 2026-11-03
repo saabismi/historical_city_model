@@ -3,7 +3,7 @@
 Prepare LiDAR vegetation areas and tiled viewer placements in parallel.
 
 Usage:
-    python prepare_vegetation.py \
+    python prepare_vegetation_parallel.py \
         --terrain espoo_terrain \
         --downloads espoo_pointcloud \
         --mtk MTK_2009_clipped \
@@ -30,13 +30,25 @@ Outputs:
 Configuration is below. Point clouds, DEMs, and MTK layers must use
 EPSG:3067. The coverage index is reprojected when needed.
 
+Vegetation filtering:
+    - LAS classes 3, 4, and 5 are treated as candidate vegetation.
+    - Buildings, roads, water, and the configured MTK infrastructure layers
+      are excluded from placement.
+    - The layers sahkolinja, rautatie, and muuntoasema are read from
+      mtk-muut_2009_clipped.gpkg and buffered using the editable
+      powerline_buffers_metres values below. The buffers are applied before
+      vegetation coverage and plant placement are written.
+    - processing_buffer provides neighboring LiDAR/DEM context only;
+      generated vegetation remains limited to each terrain tile core bounds.
+
 Important:
     - Original DEM acquisition consistency is not verified.
     - Area partitions use nearest symbols, not equal-area partitioning.
     - Inspection areas are split at terrain tile boundaries.
     - LAS files are reread for intersecting processing tiles.
     - Output is not resumable; use a new folder after a failed run.
-    - The existing C++ viewer needs a vegetation loader/rendering update.
+    - Existing placement files use VEG1 and are independent of billboard
+      texture generation and viewer asset packing.
 
 Requires GDAL, numpy, scipy, rasterio, laspy+lazrs, shapely >= 2.
 """
@@ -113,12 +125,13 @@ CONFIG = {
     # Only local DEM gaps within this distance are interpolated.
     "ground_fill_distance_metres": 150.0,
 
-    # Placement exclusion radii.
+    # Placement exclusion radii. These buffers remove nearby placements,
+    # including vegetation-classified LiDAR points belonging to infrastructure.
     "building_buffer_metres": 3.0,
     "road_default_radius_metres": 3.0,
     "powerline_buffers_metres": {
-        # MTK line/polygon layers that can contain LiDAR points classified
-        # as vegetation but belong to electrical infrastructure.
+        # Per-layer buffers for MTK infrastructure in powerline_file.
+        # Increase these values if classified powerline points remain.
         "sahkolinja": 12.0,
         "rautatie": 8.0,
         "muuntoasema": 20.0,
@@ -158,6 +171,7 @@ CONFIG = {
         ("mtk-vakavesi_2009_clipped.gpkg", "jarvi", "water"),
     ],
 
+    # These layers are queried and buffered during tile exclusion building.
     "powerline_file": "mtk-muut_2009_clipped.gpkg",
     "powerline_layers": [
         "sahkolinja",
@@ -299,7 +313,7 @@ class VectorLayer:
 
 
 def open_mtk(folder):
-    """Open exclusions, powerlines, optional allows, roads, and classes."""
+    """Open exclusions, infrastructure, optional allows, roads, and classes."""
     exclusions = [
         (VectorLayer(folder / filename, layer), treatment)
         for filename, layer, treatment in CONFIG["exclude_layers"]
