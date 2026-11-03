@@ -8,8 +8,7 @@ near cards, four upright medium cards, and four reduced upright far cards.
 The viewer selects two, three, or four cards according to the active preset.
 
 Usage:
-    python pack_viewer_vegetation.py \
-        -i 2008_vegetation_test -o 2008_vegetation_viewer
+    python pack_viewer_vegetation.py -i Historyviewer/espoo2008_veg_tiles_new -o Historyviewer/espoo2008_veg_viewer_new
 
 Arguments:
     -i, --input       Folder containing vegetation_manifest.json.

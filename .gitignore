@@ -31,3 +31,7 @@ Historyviewer/espoo2008_terrain/
 Historyviewer/espoo2008_terrain_quick/
 Historyviewer/espoo2008_roads
 Historyviewer/espoo2008_buildings_all
+Historyviewer/bin/*
+Historyviewer/obj/*
+assets/vegetation_assets_new
+Historyviewer/espoo2008*
