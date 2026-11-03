@@ -9,6 +9,8 @@ Usage:
         --mtk MTK_2009_clipped \
         --assets assets/veg \
         -o vegetation_output --workers 2 --test-tiles 10
+        
+    python prepare_vegetation_parallel.py --terrain espoo2008_dem_tiled --downloads espoo1965_clouds --mtk mtk_2009_clipped --assets assets/vegetation_assets_new -o Historyviewer/espoo2008_veg_tiles_new --workers 4 --test-tiles 100
 
 Arguments:
     --terrain      Folder containing tile_manifest.json and DEM files.
@@ -132,9 +134,9 @@ CONFIG = {
     "powerline_buffers_metres": {
         # Per-layer buffers for MTK infrastructure in powerline_file.
         # Increase these values if classified powerline points remain.
-        "sahkolinja": 12.0,
-        "rautatie": 8.0,
-        "muuntoasema": 20.0,
+        "sahkolinja": 6.0,
+        "rautatie": 6.0,
+        "muuntoasema": 2.0,
     },
 
     # Edit with actual tieviiva LUOKKA codes, for example:
