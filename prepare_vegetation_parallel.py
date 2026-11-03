@@ -116,6 +116,13 @@ CONFIG = {
     # Placement exclusion radii.
     "building_buffer_metres": 3.0,
     "road_default_radius_metres": 3.0,
+    "powerline_buffers_metres": {
+        # MTK line/polygon layers that can contain LiDAR points classified
+        # as vegetation but belong to electrical infrastructure.
+        "sahkolinja": 12.0,
+        "rautatie": 8.0,
+        "muuntoasema": 20.0,
+    },
 
     # Edit with actual tieviiva LUOKKA codes, for example:
     # 12345: 5.0
@@ -149,6 +156,13 @@ CONFIG = {
         ),
         ("mtk-vakavesi_2009_clipped.gpkg", "meri", "water"),
         ("mtk-vakavesi_2009_clipped.gpkg", "jarvi", "water"),
+    ],
+
+    "powerline_file": "mtk-muut_2009_clipped.gpkg",
+    "powerline_layers": [
+        "sahkolinja",
+        "rautatie",
+        "muuntoasema",
     ],
 
     "road_file": "mtk-tie_2009_clipped.gpkg",
@@ -285,10 +299,17 @@ class VectorLayer:
 
 
 def open_mtk(folder):
-    """Open exclusions, optional allow polygons, roads, and class symbols."""
+    """Open exclusions, powerlines, optional allows, roads, and classes."""
     exclusions = [
         (VectorLayer(folder / filename, layer), treatment)
         for filename, layer, treatment in CONFIG["exclude_layers"]
+    ]
+    powerlines = [
+        VectorLayer(
+            folder / CONFIG["powerline_file"],
+            layer,
+        )
+        for layer in CONFIG["powerline_layers"]
     ]
 
     # Allow layers are unnecessary when unrestricted detected vegetation
@@ -315,18 +336,19 @@ def open_mtk(folder):
             f"Classification field {field!r} is missing."
         )
 
-    return exclusions, allowed, roads, classes
+    return exclusions, powerlines, allowed, roads, classes
 
 
 def tile_exclusions(bounds, mtk):
-    """Combine buffered buildings/roads, water, and optional allowed areas."""
-    exclusions, allowed, roads, _ = mtk
+    """Combine infrastructure, buffered buildings/roads, water, and allows."""
+    exclusions, powerlines, allowed, roads, _ = mtk
     pieces = []
 
     radii = [
         CONFIG["building_buffer_metres"],
         CONFIG["road_default_radius_metres"],
         *CONFIG["road_radius_by_luokka"].values(),
+        *CONFIG["powerline_buffers_metres"].values(),
     ]
     extra = max(radii)
     query_bounds = box(*bounds).buffer(extra).bounds
@@ -349,6 +371,13 @@ def tile_exclusions(bounds, mtk):
             code, CONFIG["road_default_radius_metres"]
         )
         pieces.append(geometry.buffer(radius))
+
+    for layer, layer_name in zip(
+        powerlines, CONFIG["powerline_layers"]
+    ):
+        radius = CONFIG["powerline_buffers_metres"][layer_name]
+        for geometry, _ in layer.query(query_bounds):
+            pieces.append(geometry.buffer(radius))
 
     exclusion = (
         union_all(pieces)
@@ -1316,7 +1345,7 @@ def initialize_worker(
         Path(downloads_path), Path(index_path)
     )
     mtk = open_mtk(Path(mtk_path))
-    class_points = load_class_points(mtk[3])
+    class_points = load_class_points(mtk[4])
     assets, by_species = load_assets(Path(assets_path))
 
     WORKER = {
