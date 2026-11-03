@@ -57,8 +57,6 @@ struct PlantCandidate {
     const Plant* plant; // Resident plant instance.
     double x, y, z;    // Camera-relative trunk-base position.
     double distance;   // Distance to approximate card center.
-    double cameraYaw;
-    double cameraPitch;
 };
 
 // Reused each frame. This stores candidates, not billboard vertices.
@@ -549,92 +547,6 @@ static void appendCard(
     }
 }
 
-// Append a card facing the camera in both horizontal and vertical directions.
-//
-// Its pivot remains at the plant's base position. Unlike an axial billboard,
-// its top can tilt away from world-up to remain visible from high altitude.
-static void appendFacingCard(
-    std::vector<BillboardVertex>& batch,
-    const Asset& asset,
-    const Plant& plant,
-    double x, double y, double z
-) {
-    double width = asset.width * plant.widthScale;
-    double height = asset.height * plant.heightScale;
-
-    // Direction from the plant base toward the camera.
-    // Positions passed to this function are already camera-relative.
-    double nx = -x;
-    double ny = -y;
-    double nz = -z;
-
-    double length = std::sqrt(nx*nx + ny*ny + nz*nz);
-
-    if (length < 1e-6) {
-        nx = 0;
-        ny = 0;
-        nz = 1;
-    } else {
-        nx /= length;
-        ny /= length;
-        nz /= length;
-    }
-    // Horizontal right vector perpendicular to the facing direction.
-    double rx = nz;
-    double ry = 0;
-    double rz = -nx;
-
-    double rightLength = std::sqrt(rx*rx + rz*rz);
-
-    // Directly overhead, the horizontal facing direction is undefined.
-    if (rightLength < 1e-6) {
-        rx = 1;
-        ry = 0;
-        rz = 0;
-    } else {
-        rx /= rightLength;
-        rz /= rightLength;
-    }
-
-    // Card-up = facing direction cross card-right.
-    // This tilts the card toward an elevated camera.
-    double ux = ny*rz - nz*ry;
-    double uy = nz*rx - nx*rz;
-    double uz = nx*ry - ny*rx;
-
-    double left = -asset.pivotU * width;
-    double right = (1.0 - asset.pivotU) * width;
-    double bottom = -asset.pivotV * height;
-    double top = (1.0 - asset.pivotV) * height;
-
-    double horizontal[4] = { left, right, right, left };
-    double vertical[4] = { bottom, bottom, top, top };
-
-    float textureU[4] = { 0, 1, 1, 0 };
-    float textureV[4] = { 0, 0, 1, 1 };
-
-    for (int i = 0; i < 4; ++i) {
-        BillboardVertex vertex;
-
-        vertex.x = (float)(
-            x + rx*horizontal[i] + ux*vertical[i]
-        );
-        vertex.y = (float)(
-            y + ry*horizontal[i] + uy*vertical[i]
-        );
-        vertex.z = (float)(
-            z + rz*horizontal[i] + uz*vertical[i]
-        );
-
-        vertex.u = textureU[i];
-        vertex.v = textureV[i];
-        vertex.r = vertex.g = vertex.b = plant.tint;
-
-        batch.push_back(vertex);
-    }
-}
-
-
 // Append the horizontal canopy card used for overhead views.
 static void appendCanopy(
     std::vector<BillboardVertex>& batch,
@@ -681,6 +593,8 @@ void collect(
     if (!enabled || !data) return;
 
     (void)planes;
+    (void)cameraYaw;
+    (void)cameraPitch;
 
     for (std::size_t i = 0; i < data->cells.size(); ++i) {
         const Cell& cell = data->cells[i];
@@ -711,8 +625,6 @@ void collect(
             candidate.y = y;
             candidate.z = z;
             candidate.distance = std::sqrt(distanceSquared);
-            candidate.cameraYaw = cameraYaw;
-            candidate.cameraPitch = cameraPitch;
 
             candidates.push_back(candidate);
         }
@@ -742,20 +654,6 @@ static void buildSelectedBatches() {
             : (candidate.distance < 150 ? 1 : 2);
 
         lod = std::max(lod, minimumLOD);
-
-        // Use the facing billboard for steep overhead views.
-        // Remove this block if you prefer to retain upright near cards.
-        double horizontalDistance = std::sqrt(
-            candidate.x * candidate.x
-            + candidate.z * candidate.z
-        );
-
-        double cameraHeightAbovePlant = -candidate.y;
-
-        if (cameraHeightAbovePlant > 0
-            && cameraHeightAbovePlant > horizontalDistance) {
-            lod = 2;
-        }
 
         std::size_t firstTexture =
             plant.asset * TEXTURES_PER_ASSET;
@@ -795,11 +693,15 @@ static void buildSelectedBatches() {
                 );
             }
         } else {
-            appendFacingCard(
+            // Far cards remain vertical; only their texture detail changes.
+            // Never orient a card using the full 3D camera direction.
+            appendCard(
                 batches[firstTexture + 6],
                 asset,
                 plant,
-                candidate.x, candidate.y, candidate.z
+                candidate.x, candidate.y, candidate.z,
+                std::cos(plant.yaw),
+                std::sin(plant.yaw)
             );
         }
 
