@@ -22,7 +22,7 @@ using namespace std;
 
 namespace vegetation {
 
-static const int TEXTURES_PER_ASSET = 8;
+static const int TEXTURES_PER_ASSET = 12;
 
 // Shared appearance data for one species variant.
 struct Asset {
@@ -30,7 +30,7 @@ struct Asset {
     float height;      // Unscaled card height in metres.
     float pivotU;      // Horizontal trunk-base image coordinate.
     float pivotV;      // Vertical trunk-base image coordinate.
-    GLuint texture[8]; // Near 3, medium 3, far, and horizontal canopy.
+    GLuint texture[12]; // Four upright cards for each distance LOD.
 };
 
 // Interleaved vertex format for texture-grouped CPU arrays.
@@ -72,7 +72,7 @@ static bool nearerPlant(
 
 
 static int minimumLOD = 0;          // Low preset can omit near detail.
-static int billboardCount = 3;      // Low uses 2; higher presets use 3.
+static int billboardCount = 3;      // Low uses 2, Medium 3, High 4.
 
 bool enabled = true;
 unsigned long drawnPlants = 0;
@@ -203,14 +203,10 @@ bool initialize(const std::string& folder, std::string& error) {
     std::ifstream file((folder + "\\assets.txt").c_str());
     std::string line;
 
-    if (!readLine(file, line)
-        || (line != "VEGETATION_ASSETS_V2"
-            && line != "VEGETATION_ASSETS_V3")) {
+    if (!readLine(file, line) || line != "VEGETATION_ASSETS_V4") {
         error = "Cannot read vegetation assets.txt.";
         return false;
     }
-    const bool hasCanopy = line == "VEGETATION_ASSETS_V3";
-    const int fileTexturesPerAsset = hasCanopy ? 8 : 7;
 
     unsigned int count = 0;
     if (!readLine(file, line)) return false;
@@ -250,7 +246,7 @@ bool initialize(const std::string& folder, std::string& error) {
             return false;
         }
 
-        for (int texture = 0; texture < fileTexturesPerAsset; ++texture) {
+        for (int texture = 0; texture < TEXTURES_PER_ASSET; ++texture) {
             if (!readLine(file, line)) {
                 error = "Missing vegetation texture path.";
                 shutdown();
@@ -496,12 +492,12 @@ void setPreset(int preset) {
         billboardCount = 3;
     } else {
         minimumLOD = 0;
-        billboardCount = 3;
+        billboardCount = 4;
     }
 }
 
 void setBillboardCount(int count) {
-    billboardCount = std::max(2, std::min(3, count));
+    billboardCount = std::max(2, std::min(4, count));
 }
 
 // Clear frame data while retaining allocated capacity.
@@ -546,36 +542,6 @@ static void appendCard(
         batch.push_back(vertex);
     }
 }
-
-// Append the horizontal canopy card used for overhead views.
-static void appendCanopy(
-    std::vector<BillboardVertex>& batch,
-    const Asset& asset,
-    const Plant& plant,
-    double x, double y, double z
-) {
-    double width = asset.width * plant.widthScale;
-    double height = asset.height * plant.heightScale;
-    double canopyY = y + (1.0 - asset.pivotV) * height;
-    double half = width * 0.5;
-
-    const double px[4] = { -half, half, half, -half };
-    const double pz[4] = { -half, -half, half, half };
-    const float u[4] = { 0, 1, 1, 0 };
-    const float v[4] = { 0, 0, 1, 1 };
-
-    for (int i = 0; i < 4; ++i) {
-        BillboardVertex vertex;
-        vertex.x = (float)(x + px[i]);
-        vertex.y = (float)canopyY;
-        vertex.z = (float)(z + pz[i]);
-        vertex.u = u[i];
-        vertex.v = v[i];
-        vertex.r = vertex.g = vertex.b = plant.tint;
-        batch.push_back(vertex);
-    }
-}
-
 
 // Collect vegetation candidates from visible cells.
 //
@@ -658,59 +624,22 @@ static void buildSelectedBatches() {
         std::size_t firstTexture =
             plant.asset * TEXTURES_PER_ASSET;
 
-        if (lod < 2) {
-            std::size_t slot =
-                firstTexture + (lod == 0 ? 0 : 3);
+        std::size_t slot = firstTexture + lod * 4;
+        const double cardAngles[4] = {
+            plant.yaw,
+            plant.yaw + 0.7853981634,
+            plant.yaw + 1.5707963268,
+            plant.yaw + 2.3561944902,
+        };
 
-            double cosine = std::cos(plant.yaw);
-            double sine = std::sin(plant.yaw);
-
+        for (int card = 0; card < billboardCount; ++card) {
             appendCard(
-                batches[slot],
+                batches[slot + card],
                 asset,
                 plant,
                 candidate.x, candidate.y, candidate.z,
-                cosine, sine
-            );
-
-            appendCard(
-                batches[slot + 1],
-                asset,
-                plant,
-                candidate.x, candidate.y, candidate.z,
-                -sine, cosine
-            );
-
-            if (billboardCount >= 3) {
-                double thirdAngle = plant.yaw + 1.0471975512;
-                appendCard(
-                    batches[slot + 2],
-                    asset,
-                    plant,
-                    candidate.x, candidate.y, candidate.z,
-                    std::cos(thirdAngle),
-                    std::sin(thirdAngle)
-                );
-            }
-        } else {
-            // Far cards remain vertical; only their texture detail changes.
-            // Never orient a card using the full 3D camera direction.
-            appendCard(
-                batches[firstTexture + 6],
-                asset,
-                plant,
-                candidate.x, candidate.y, candidate.z,
-                std::cos(plant.yaw),
-                std::sin(plant.yaw)
-            );
-        }
-
-        if (asset.texture[7]) {
-            appendCanopy(
-                batches[firstTexture + 7],
-                asset,
-                plant,
-                candidate.x, candidate.y, candidate.z
+                std::cos(cardAngles[card]),
+                std::sin(cardAngles[card])
             );
         }
     }
@@ -782,7 +711,7 @@ void draw() {
 // Resident Data objects are owned and deleted by main.cpp.
 void shutdown() {
     for (std::size_t i = 0; i < assets.size(); ++i)
-        for (int j = 0; j < 8; ++j)
+        for (int j = 0; j < 12; ++j)
             if (assets[i].texture[j])
                 glDeleteTextures(1, &assets[i].texture[j]);
 

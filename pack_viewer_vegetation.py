@@ -3,11 +3,9 @@
 Package generated vegetation for the legacy C++ viewer.
 
 The package contains VEG1 placement files copied from the input manifest and
-VEGETATION_ASSETS_V3 metadata. Each asset has eight textures: three upright
-near cards, three upright medium cards, one reduced upright far card, and one
-horizontal canopy card for overhead views. The C++ viewer keeps V2 packages
-compatible, but this packer requires the canopy field produced by the updated
-asset generator.
+VEGETATION_ASSETS_V4 metadata. Each asset has twelve textures: four upright
+near cards, four upright medium cards, and four reduced upright far cards.
+The viewer selects two, three, or four cards according to the active preset.
 
 Usage:
     python pack_viewer_vegetation.py \
@@ -22,7 +20,7 @@ Requires Pillow:
     pip install pillow
 
 Output:
-    assets.txt                 VEGETATION_ASSETS_V3 metadata.
+    assets.txt                 VEGETATION_ASSETS_V4 metadata.
     vegetation_index.txt
     textures/*.tga
     vegetation/*.veg
@@ -119,17 +117,21 @@ def main():
         asset = json.loads(definition.read_text(encoding="utf-8"))
         lods = asset["lods"]
 
-        # Eight textures used by the renderer:
-        # near front/side/third, medium front/side/third, far front, canopy.
+        # Twelve textures used by the renderer: four upright cards for each
+        # of the near, medium, and far distance LODs.
         entries = [
             (lods[0]["front"], size),
             (lods[0]["side"], size),
             (lods[0]["third"], size),
+            (lods[0]["fourth"], size),
             (lods[1]["front"], size // 2),
             (lods[1]["side"], size // 2),
             (lods[1]["third"], size // 2),
+            (lods[1]["fourth"], size // 2),
             (lods[2]["front"], size // 4),
-            (asset["canopy"], size),
+            (lods[2]["side"], size // 4),
+            (lods[2]["third"], size // 4),
+            (lods[2]["fourth"], size // 4),
         ]
 
         texture_paths = []
@@ -165,7 +167,7 @@ def main():
     with (output / "assets.txt").open(
         "w", encoding="utf-8", newline="\n"
     ) as handle:
-        handle.write("VEGETATION_ASSETS_V3\n")
+        handle.write("VEGETATION_ASSETS_V4\n")
         handle.write(f"{len(records)}\n")
 
         for asset_id, width, height, pu, pv, paths in records:
