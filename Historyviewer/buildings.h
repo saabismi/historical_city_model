@@ -63,6 +63,9 @@ Data* load(
 // Set maximum rendering distance for Low / Medium / High.
 void setPreset(int preset);
 
+// Use the shared viewer distance so objects cannot diverge spatially.
+void setMaximumDistance(double distance);
+
 // Reset rendering statistics at the beginning of a frame.
 void beginFrame();
 
@@ -93,4 +96,3 @@ extern unsigned long drawnTriangles;
 } // namespace buildings
 
 #endif
-

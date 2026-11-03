@@ -505,6 +505,10 @@ void setPreset(int preset) {
         maximumDistance = 10000;
 }
 
+void setMaximumDistance(double distance) {
+    maximumDistance = std::max(1.0, distance);
+}
+
 
 void beginFrame() {
     drawnBuildings = 0;
@@ -698,4 +702,3 @@ void shutdown() {
 }
 
 } // namespace buildings
-

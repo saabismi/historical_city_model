@@ -61,6 +61,9 @@ void setPreset(int preset);
 // Presets use 2 for Low, 3 for Medium, and 4 for High.
 void setBillboardCount(int count);
 
+// Override preset detail without changing tile residency or tile readiness.
+void setRenderSettings(int minimumLod, int billboardCount);
+
 // Begin one frame's vegetation collection.
 void beginFrame();
 
