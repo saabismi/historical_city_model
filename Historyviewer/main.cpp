@@ -1287,15 +1287,24 @@ void drawSettingsMenu() {
     const int width = 520;
     const int rowHeight = 38;
 
-    glColor4f(0.03f, 0.04f, 0.06f, 0.94f);
+    const int bottom =
+        top + 60 + settingsItemCount * rowHeight;
+
+    glColor4f(0.16f, 0.16f, 0.16f, 1.0f);
     glBegin(GL_QUADS);
     glVertex2i(left, top);
     glVertex2i(left + width, top);
-    glVertex2i(
-        left + width,
-        top + 60 + settingsItemCount * rowHeight
-    );
-    glVertex2i(left, top + 60 + settingsItemCount * rowHeight);
+    glVertex2i(left + width, bottom);
+    glVertex2i(left, bottom);
+    glEnd();
+
+    glColor3f(1, 1, 1);
+    glLineWidth(1.0f);
+    glBegin(GL_LINE_LOOP);
+    glVertex2i(left, top);
+    glVertex2i(left + width, top);
+    glVertex2i(left + width, bottom);
+    glVertex2i(left, bottom);
     glEnd();
 
     glColor3f(1, 1, 1);
@@ -1309,27 +1318,14 @@ void drawSettingsMenu() {
         int y = top + 68 + i * rowHeight;
         bool selected = i == selectedSetting;
 
-        glColor4f(
-            selected ? 0.95f : 0.08f,
-            selected ? 0.75f : 0.09f,
-            selected ? 0.08f : 0.12f,
-            0.95f
-        );
-        glBegin(GL_QUADS);
-        glVertex2i(left + 16, y - 22);
-        glVertex2i(left + width - 16, y - 22);
-        glVertex2i(left + width - 16, y + 10);
-        glVertex2i(left + 16, y + 10);
-        glEnd();
-
         char value[32];
         char line[128];
         formatSettingValue(i, value, sizeof(value));
         std::sprintf(line, "%s: %s", settingsItems[i].label, value);
         glColor3f(
-            selected ? 0.05f : 1.0f,
-            selected ? 0.05f : 1.0f,
-            selected ? 0.05f : 1.0f
+            selected ? 1.0f : 1.0f,
+            selected ? 0.85f : 1.0f,
+            selected ? 0.0f : 1.0f
         );
         text(left + 28, y, line);
     }
