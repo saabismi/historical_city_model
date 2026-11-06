@@ -500,6 +500,11 @@ void setBillboardCount(int count) {
     billboardCount = std::max(2, std::min(4, count));
 }
 
+void setRenderSettings(int lod, int cards) {
+    minimumLOD = std::max(0, std::min(2, lod));
+    billboardCount = std::max(2, std::min(4, cards));
+}
+
 // Clear frame data while retaining allocated capacity.
 void beginFrame() {
     drawnPlants = 0;

@@ -162,6 +162,8 @@ bool running = true;
 bool helpVisible = true;
 bool wireframe = false;
 bool orbitMode = true;
+bool settingsVisible = false;
+int selectedSetting = 0;
 
 bool leftDragging = false;
 bool rightDragging = false;
@@ -193,6 +195,53 @@ double unloadRadius = 850;
 double farPlane = 2000;
 size_t memoryBudget = 96 * 1024 * 1024;
 int lodBias = 1;
+
+struct ViewerSettings {
+    double viewDistance;
+    double loadDistance;
+    double unloadDistance;
+    int cacheMegabytes;
+    int terrainDetail;
+    int vegetationCards;
+    int vegetationLodFloor;
+};
+
+ViewerSettings viewerSettings = {
+    1200, 1500, 1800, 96, 1, 3, 0
+};
+
+struct SettingsItem {
+    const char* label;
+    int kind;
+    double minimum;
+    double maximum;
+    double step;
+};
+
+enum {
+    SETTING_VIEW_DISTANCE,
+    SETTING_LOAD_DISTANCE,
+    SETTING_UNLOAD_DISTANCE,
+    SETTING_CACHE,
+    SETTING_TERRAIN_DETAIL,
+    SETTING_VEGETATION_CARDS,
+    SETTING_VEGETATION_LOD,
+    SETTING_EXIT
+};
+
+const SettingsItem settingsItems[] = {
+    {"View distance", SETTING_VIEW_DISTANCE, 400, 20000, 200},
+    {"Load radius", SETTING_LOAD_DISTANCE, 400, 20000, 200},
+    {"Unload radius", SETTING_UNLOAD_DISTANCE, 600, 25000, 200},
+    {"Cache (MB)", SETTING_CACHE, 32, 512, 16},
+    {"Terrain detail", SETTING_TERRAIN_DETAIL, 0, 3, 1},
+    {"Vegetation cards", SETTING_VEGETATION_CARDS, 2, 4, 1},
+    {"Vegetation LOD floor", SETTING_VEGETATION_LOD, 0, 2, 1},
+    {"Exit to Windows", SETTING_EXIT, 0, 0, 0}
+};
+
+const int settingsItemCount =
+    (int)(sizeof(settingsItems) / sizeof(settingsItems[0]));
 
 // Terrain frame statistics.
 int drawnTiles = 0;
@@ -991,6 +1040,114 @@ bool visible(const Tile& tile) {
     return true;
 }
 
+void applyViewerSettings() {
+    viewerSettings.loadDistance = std::max(
+        viewerSettings.loadDistance,
+        viewerSettings.viewDistance
+    );
+    viewerSettings.unloadDistance = std::max(
+        viewerSettings.unloadDistance,
+        viewerSettings.loadDistance + 100.0
+    );
+
+    loadRadius = viewerSettings.loadDistance;
+    unloadRadius = viewerSettings.unloadDistance;
+    farPlane = viewerSettings.viewDistance;
+    memoryBudget =
+        (size_t)viewerSettings.cacheMegabytes * 1024 * 1024;
+    lodBias = viewerSettings.terrainDetail;
+
+    buildings::setMaximumDistance(viewerSettings.viewDistance);
+    roads::setMaximumDistance(viewerSettings.viewDistance);
+    vegetation::setRenderSettings(
+        viewerSettings.vegetationLodFloor,
+        viewerSettings.vegetationCards
+    );
+}
+
+void setInitialViewerSettings(int preset) {
+    viewerSettings.viewDistance = farPlane;
+    viewerSettings.loadDistance = loadRadius;
+    viewerSettings.unloadDistance = unloadRadius;
+    viewerSettings.cacheMegabytes =
+        (int)(memoryBudget / (1024 * 1024));
+    viewerSettings.terrainDetail = lodBias;
+    viewerSettings.vegetationCards = preset == 0 ? 2 : preset == 1 ? 3 : 4;
+    viewerSettings.vegetationLodFloor = preset == 0 ? 1 : 0;
+}
+
+double settingValue(int index) {
+    switch (settingsItems[index].kind) {
+    case SETTING_VIEW_DISTANCE: return viewerSettings.viewDistance;
+    case SETTING_LOAD_DISTANCE: return viewerSettings.loadDistance;
+    case SETTING_UNLOAD_DISTANCE: return viewerSettings.unloadDistance;
+    case SETTING_CACHE: return viewerSettings.cacheMegabytes;
+    case SETTING_TERRAIN_DETAIL: return viewerSettings.terrainDetail;
+    case SETTING_VEGETATION_CARDS: return viewerSettings.vegetationCards;
+    case SETTING_VEGETATION_LOD: return viewerSettings.vegetationLodFloor;
+    default: return 0;
+    }
+}
+
+void changeSetting(int direction) {
+    if (selectedSetting < 0 || selectedSetting >= settingsItemCount)
+        return;
+
+    const SettingsItem& item = settingsItems[selectedSetting];
+    if (item.kind == SETTING_EXIT) {
+        if (direction > 0) running = false;
+        return;
+    }
+
+    double value = settingValue(selectedSetting)
+        + direction * item.step;
+    value = std::max(item.minimum, std::min(item.maximum, value));
+
+    switch (item.kind) {
+    case SETTING_VIEW_DISTANCE:
+        viewerSettings.viewDistance = value;
+        break;
+    case SETTING_LOAD_DISTANCE:
+        viewerSettings.loadDistance = value;
+        break;
+    case SETTING_UNLOAD_DISTANCE:
+        viewerSettings.unloadDistance = value;
+        break;
+    case SETTING_CACHE:
+        viewerSettings.cacheMegabytes = (int)value;
+        break;
+    case SETTING_TERRAIN_DETAIL:
+        viewerSettings.terrainDetail = (int)value;
+        break;
+    case SETTING_VEGETATION_CARDS:
+        viewerSettings.vegetationCards = (int)value;
+        break;
+    case SETTING_VEGETATION_LOD:
+        viewerSettings.vegetationLodFloor = (int)value;
+        break;
+    }
+
+    applyViewerSettings();
+}
+
+void formatSettingValue(int index, char* output, size_t capacity) {
+    if (settingsItems[index].kind == SETTING_EXIT) {
+        std::sprintf(output, "button");
+        return;
+    }
+
+    double value = settingValue(index);
+    if (settingsItems[index].kind == SETTING_CACHE
+        || settingsItems[index].kind == SETTING_TERRAIN_DETAIL
+        || settingsItems[index].kind == SETTING_VEGETATION_CARDS
+        || settingsItems[index].kind == SETTING_VEGETATION_LOD) {
+        std::sprintf(output, "%d", (int)value);
+    } else {
+        std::sprintf(output, "%.0f m", value);
+    }
+    (void)capacity;
+}
+
 // ---------------------------------------------------------------------------
 // Text overlay
 // ---------------------------------------------------------------------------
@@ -1073,7 +1230,7 @@ void drawOverlay() {
         );
         text(
             12, 126,
-            "Home: world view  F5: building sample  Esc: exit"
+            "Home: world view  F5: building sample  Esc: settings"
         );
     }
 
@@ -1102,6 +1259,83 @@ void drawOverlay() {
 
     glEnable(GL_DEPTH_TEST);
 
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+}
+
+void drawSettingsMenu() {
+    if (!settingsVisible) return;
+
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    glOrtho(0, viewportWidth, viewportHeight, 0, -1, 1);
+
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    const int left = std::max(20, viewportWidth / 2 - 260);
+    const int top = std::max(20, viewportHeight / 2 - 250);
+    const int width = 520;
+    const int rowHeight = 38;
+
+    glColor4f(0.03f, 0.04f, 0.06f, 0.94f);
+    glBegin(GL_QUADS);
+    glVertex2i(left, top);
+    glVertex2i(left + width, top);
+    glVertex2i(
+        left + width,
+        top + 60 + settingsItemCount * rowHeight
+    );
+    glVertex2i(left, top + 60 + settingsItemCount * rowHeight);
+    glEnd();
+
+    glColor3f(1, 1, 1);
+    text(left + 24, top + 32, "Historyviewer settings");
+    text(
+        left + 24, top + 52,
+        "Up/Down select  Left/Right change  Enter activate  Esc close"
+    );
+
+    for (int i = 0; i < settingsItemCount; ++i) {
+        int y = top + 68 + i * rowHeight;
+        bool selected = i == selectedSetting;
+
+        glColor4f(
+            selected ? 0.95f : 0.08f,
+            selected ? 0.75f : 0.09f,
+            selected ? 0.08f : 0.12f,
+            0.95f
+        );
+        glBegin(GL_QUADS);
+        glVertex2i(left + 16, y - 22);
+        glVertex2i(left + width - 16, y - 22);
+        glVertex2i(left + width - 16, y + 10);
+        glVertex2i(left + 16, y + 10);
+        glEnd();
+
+        char value[32];
+        char line[128];
+        formatSettingValue(i, value, sizeof(value));
+        std::sprintf(line, "%s: %s", settingsItems[i].label, value);
+        glColor3f(
+            selected ? 0.05f : 1.0f,
+            selected ? 0.05f : 1.0f,
+            selected ? 0.05f : 1.0f
+        );
+        text(left + 28, y, line);
+    }
+
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
     glPopMatrix();
     glMatrixMode(GL_PROJECTION);
     glPopMatrix();
@@ -1317,6 +1551,7 @@ void render() {
     }
 
     drawOverlay();
+    drawSettingsMenu();
     SwapBuffers(deviceContext);
 }
 
@@ -1352,13 +1587,46 @@ LRESULT CALLBACK windowProc(
         return 0;
 
     case WM_KEYDOWN:
+        if (settingsVisible) {
+            if (!(lParam & (1L << 30))) {
+                if (wParam == VK_ESCAPE) {
+                    settingsVisible = false;
+                    selectedSetting = 0;
+                } else if (wParam == VK_UP) {
+                    selectedSetting =
+                        (selectedSetting + settingsItemCount - 1)
+                        % settingsItemCount;
+                } else if (wParam == VK_DOWN) {
+                    selectedSetting =
+                        (selectedSetting + 1) % settingsItemCount;
+                } else if (wParam == VK_LEFT) {
+                    changeSetting(-1);
+                } else if (wParam == VK_RIGHT) {
+                    changeSetting(1);
+                } else if (wParam == VK_RETURN) {
+                    if (settingsItems[selectedSetting].kind
+                        == SETTING_EXIT) {
+                        running = false;
+                    } else {
+                        changeSetting(1);
+                    }
+                }
+            }
+            return 0;
+        }
+
         if (wParam < 256)
             keys[wParam] = true;
 
         // Ignore repeats for actions that toggle a state.
         if (!(lParam & (1L << 30))) {
-            if (wParam == VK_ESCAPE)
-                running = false;
+            if (wParam == VK_ESCAPE) {
+                settingsVisible = true;
+                leftDragging = false;
+                rightDragging = false;
+                for (int i = 0; i < 256; ++i)
+                    keys[i] = false;
+            }
 
             if (wParam == VK_F1)
                 helpVisible = !helpVisible;
@@ -1395,6 +1663,25 @@ LRESULT CALLBACK windowProc(
         return 0;
 
     case WM_LBUTTONDOWN:
+        if (settingsVisible) {
+            int x = (short)LOWORD(lParam);
+            int y = (short)HIWORD(lParam);
+            int left = std::max(20, viewportWidth / 2 - 260);
+            int top = std::max(20, viewportHeight / 2 - 250);
+            int row =
+                (y - (top + 46)) / 38;
+
+            if (x >= left + 16 && x <= left + 504
+                && row >= 0 && row < settingsItemCount) {
+                selectedSetting = row;
+                if (settingsItems[row].kind == SETTING_EXIT)
+                    running = false;
+                else
+                    changeSetting(1);
+            }
+            return 0;
+        }
+
     case WM_RBUTTONDOWN:
         if (message == WM_LBUTTONDOWN)
             leftDragging = true;
@@ -1768,6 +2055,7 @@ int WINAPI WinMain(
         memoryBudget = 192 * 1024 * 1024;
         lodBias = 0;
     }
+    setInitialViewerSettings(preset);
 
     if (!initializeOpenGL(instance)) {
         MessageBoxA(
@@ -1861,6 +2149,8 @@ int WINAPI WinMain(
             MB_OK | MB_ICONWARNING
         );
     }
+
+    applyViewerSettings();
 
 
     unsigned int matchedBuildingTiles = 0;

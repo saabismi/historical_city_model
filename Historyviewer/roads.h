@@ -61,6 +61,9 @@ Data* load(
 // Preset-specific render range.
 void setPreset(int preset);
 
+// Use the shared viewer distance so objects cannot diverge spatially.
+void setMaximumDistance(double distance);
+
 // Reset per-frame statistics.
 void beginFrame();
 
@@ -86,4 +89,3 @@ extern unsigned long drawnTriangles;
 } // namespace roads
 
 #endif
-
