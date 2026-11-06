@@ -27,7 +27,7 @@ using namespace std;
 const string tilesLocation = "espoo2008_terrain_quick";
 
 // Existing vegetation location: unchanged.
-const string vegetationLocation = "espoo2008_veg_viewer_new";
+const string vegetationLocation = "espoo2008_veg_viewerV4";
 
 // NEW: folder containing building_index.txt, building_materials.txt,
 // textures/, and tiles/. Change this name to match your actual output folder.
