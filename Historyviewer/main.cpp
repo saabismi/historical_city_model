@@ -1310,9 +1310,9 @@ void drawSettingsMenu() {
         bool selected = i == selectedSetting;
 
         glColor4f(
-            selected ? 0.20f : 0.08f,
-            selected ? 0.28f : 0.09f,
-            selected ? 0.38f : 0.12f,
+            selected ? 0.95f : 0.08f,
+            selected ? 0.75f : 0.09f,
+            selected ? 0.08f : 0.12f,
             0.95f
         );
         glBegin(GL_QUADS);
@@ -1326,7 +1326,11 @@ void drawSettingsMenu() {
         char line[128];
         formatSettingValue(i, value, sizeof(value));
         std::sprintf(line, "%s: %s", settingsItems[i].label, value);
-        glColor3f(1, 1, 1);
+        glColor3f(
+            selected ? 0.05f : 1.0f,
+            selected ? 0.05f : 1.0f,
+            selected ? 0.05f : 1.0f
+        );
         text(left + 28, y, line);
     }
 
