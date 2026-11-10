@@ -273,6 +273,102 @@ def indexed_triangles(index, point, edge_buffer, cell_size):
                     yield triangle
 
 
+def point_in_triangle(point, triangle):
+    """Return whether an XY point is inside or on a triangle."""
+    def cross(first, second):
+        return first[0] * second[1] - first[1] * second[0]
+
+    a, b, c = triangle[:, :2]
+    ab = b - a
+    bc = c - b
+    ca = a - c
+    ap = point - a
+    bp = point - b
+    cp = point - c
+    cross_values = (
+        cross(ab, ap),
+        cross(bc, bp),
+        cross(ca, cp),
+    )
+    return all(value >= -1e-9 for value in cross_values) or all(
+        value <= 1e-9 for value in cross_values
+    )
+
+
+def segments_intersect(first, second, third, fourth):
+    """Return whether two closed XY line segments intersect."""
+    def orientation(a, b, c):
+        vector_ab = b - a
+        vector_ac = c - a
+        value = vector_ab[0] * vector_ac[1] - vector_ab[1] * vector_ac[0]
+        if abs(value) <= 1e-9:
+            return 0
+        return 1 if value > 0 else -1
+
+    def on_segment(a, b, point):
+        return (
+            min(a[0], b[0]) - 1e-9 <= point[0] <= max(a[0], b[0]) + 1e-9
+            and min(a[1], b[1]) - 1e-9 <= point[1] <= max(a[1], b[1]) + 1e-9
+        )
+
+    first = first[:2]
+    second = second[:2]
+    third = third[:2]
+    fourth = fourth[:2]
+    orientations = (
+        orientation(first, second, third),
+        orientation(first, second, fourth),
+        orientation(third, fourth, first),
+        orientation(third, fourth, second),
+    )
+
+    if orientations[0] != orientations[1] and orientations[2] != orientations[3]:
+        return True
+
+    return (
+        orientations[0] == 0 and on_segment(first, second, third)
+    ) or (
+        orientations[1] == 0 and on_segment(first, second, fourth)
+    ) or (
+        orientations[2] == 0 and on_segment(third, fourth, first)
+    ) or (
+        orientations[3] == 0 and on_segment(third, fourth, second)
+    )
+
+
+def triangle_intersects_rectangle(triangle, minimum, maximum):
+    """Return whether an XY triangle intersects an axis-aligned rectangle."""
+    rectangle = np.asarray([
+        [minimum[0], minimum[1]],
+        [maximum[0], minimum[1]],
+        [maximum[0], maximum[1]],
+        [minimum[0], maximum[1]],
+    ], dtype=float)
+    triangle_xy = triangle[:, :2]
+
+    if any(point_in_triangle(point, triangle) for point in rectangle):
+        return True
+
+    if (
+        minimum[0] <= triangle_xy[:, 0].min()
+        and triangle_xy[:, 0].max() <= maximum[0]
+        and minimum[1] <= triangle_xy[:, 1].min()
+        and triangle_xy[:, 1].max() <= maximum[1]
+    ):
+        return True
+
+    for index in range(3):
+        first = triangle_xy[index]
+        second = triangle_xy[(index + 1) % 3]
+        for rectangle_index in range(4):
+            third = rectangle[rectangle_index]
+            fourth = rectangle[(rectangle_index + 1) % 4]
+            if segments_intersect(first, second, third, fourth):
+                return True
+
+    return False
+
+
 def deform_tile(
     source,
     destination,
@@ -365,6 +461,86 @@ def deform_tile(
                         if target is not None and math.isfinite(current):
                             if target < current:
                                 heights[row, column] = target
+                                changed += 1
+
+                # Coarse LODs can have a road pass through a terrain cell
+                # without touching any of its vertices. Lower every corner of
+                # an intersecting cell so the rendered terrain cannot bridge
+                # over the road surface.
+                for row in range(rows + 1):
+                    for column in range(columns + 1):
+                        minimum = (
+                            min(xs[row, column], xs[row, column + 1]),
+                            min(ys[row, column], ys[row + 1, column]),
+                        )
+                        maximum = (
+                            max(xs[row, column], xs[row, column + 1]),
+                            max(ys[row, column], ys[row + 1, column]),
+                        )
+                        center = np.array([
+                            (minimum[0] + maximum[0]) * 0.5,
+                            (minimum[1] + maximum[1]) * 0.5,
+                        ])
+                        radius = max(
+                            maximum[0] - minimum[0],
+                            maximum[1] - minimum[1],
+                        )
+                        cell_target = None
+
+                        for triangle in indexed_triangles(
+                            triangle_index,
+                            center,
+                            radius,
+                            index_cell_size,
+                        ):
+                            triangle_minimum = (
+                                triangle[:, 0].min(),
+                                triangle[:, 1].min(),
+                            )
+                            triangle_maximum = (
+                                triangle[:, 0].max(),
+                                triangle[:, 1].max(),
+                            )
+                            if (
+                                triangle_maximum[0] < minimum[0]
+                                or triangle_minimum[0] > maximum[0]
+                                or triangle_maximum[1] < minimum[1]
+                                or triangle_minimum[1] > maximum[1]
+                            ):
+                                continue
+
+                            if triangle_intersects_rectangle(
+                                triangle,
+                                minimum,
+                                maximum,
+                            ):
+                                candidate = float(triangle[:, 2].min())
+                                cell_target = (
+                                    candidate
+                                    if cell_target is None
+                                    else min(cell_target, candidate)
+                                )
+
+                        if cell_target is None:
+                            continue
+
+                        cell_target -= clearance
+                        for vertex_row, vertex_column in (
+                            (row, column),
+                            (row + 1, column),
+                            (row, column + 1),
+                            (row + 1, column + 1),
+                        ):
+                            current = float(
+                                heights[vertex_row, vertex_column]
+                            )
+                            if (
+                                math.isfinite(current)
+                                and cell_target < current
+                            ):
+                                heights[vertex_row, vertex_column] = (
+                                    cell_target
+                                )
                                 changed += 1
 
             all_values.append(heights[np.isfinite(heights)])
