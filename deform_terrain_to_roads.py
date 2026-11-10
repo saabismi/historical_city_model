@@ -34,6 +34,7 @@ import math
 import shutil
 import struct
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -376,10 +377,14 @@ def deform_tile(
     clearance,
     edge_buffer,
     index_cell_size,
+    tile_number,
+    tile_count,
 ):
     """Copy one TRN1 tile while lowering terrain under road triangles."""
     changed = 0
     all_values = []
+    started = time.monotonic()
+    last_report = started
 
     with source.open("rb") as input_file, destination.open("wb") as output:
         if read_exact(input_file, 4, "TRN1 header") != TRN_MAGIC:
@@ -400,10 +405,15 @@ def deform_tile(
 
         xmin, ymin, xmax, ymax = bounds
 
-        for _ in range(levels):
+        for level in range(levels):
             columns, rows = struct.unpack("<2I", read_exact(
                 input_file, 8, "TRN1 level dimensions"
             ))
+            print(
+                f"Tile {tile_number}/{tile_count}: LOD {level + 1}/{levels} "
+                f"({columns}x{rows}) starting",
+                flush=True,
+            )
             east = np.frombuffer(
                 read_exact(input_file, columns * 4, "TRN1 east coordinates"),
                 dtype="<f4",
@@ -462,6 +472,17 @@ def deform_tile(
                             if target < current:
                                 heights[row, column] = target
                                 changed += 1
+
+                    now = time.monotonic()
+                    if now - last_report >= 10.0:
+                        print(
+                            f"Tile {tile_number}/{tile_count}: LOD "
+                            f"{level + 1}/{levels}, row {row + 1}/"
+                            f"{rows + 2}, changed vertices {changed}, "
+                            f"elapsed {now - started:.0f}s",
+                            flush=True,
+                        )
+                        last_report = now
 
                 # Coarse LODs can have a road pass through a terrain cell
                 # without touching any of its vertices. Lower every corner of
@@ -549,6 +570,12 @@ def deform_tile(
             output.write(east.astype("<f4").tobytes())
             output.write(south.astype("<f4").tobytes())
             output.write(heights.astype("<f4").tobytes())
+            print(
+                f"Tile {tile_number}/{tile_count}: LOD {level + 1}/{levels} "
+                f"done, changed vertices {changed}, elapsed "
+                f"{time.monotonic() - started:.1f}s",
+                flush=True,
+            )
 
     values = np.concatenate(all_values) if all_values else np.empty(0)
     elevation_bounds = (
@@ -560,6 +587,11 @@ def deform_tile(
         output.seek(40)
         output.write(struct.pack("<2f", *elevation_bounds))
 
+    print(
+        f"Tile {tile_number}/{tile_count}: finished, changed vertices "
+        f"{changed}, elapsed {time.monotonic() - started:.1f}s",
+        flush=True,
+    )
     return changed, elevation_bounds
 
 
@@ -626,8 +658,14 @@ def main():
     index_entries = []
     total_changed = 0
     tiles_with_roads = 0
+    started = time.monotonic()
+    print(
+        f"Preparing {len(terrain_tiles)} terrain tiles; "
+        f"{len(road_files)} road index entries.",
+        flush=True,
+    )
 
-    for tile in terrain_tiles:
+    for tile_number, tile in enumerate(terrain_tiles, 1):
         source = terrain / tile["terrain_file"]
         destination = output / tile["terrain_file"]
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -637,10 +675,27 @@ def main():
         if road_file is not None:
             if not road_file.is_file():
                 raise ValueError(f"Missing indexed ROAD1 file: {road_file}")
+            print(
+                f"Tile {tile_number}/{len(terrain_tiles)}: reading roads "
+                f"{road_file.name}",
+                flush=True,
+            )
             triangles = read_road_triangles(road_file)
             triangle_index = build_triangle_index(
                 triangles,
                 args.index_cell_size,
+            )
+            print(
+                f"Tile {tile_number}/{len(terrain_tiles)}: loaded "
+                f"{len(triangles)} road triangles in "
+                f"{len(triangle_index)} spatial buckets.",
+                flush=True,
+            )
+        else:
+            print(
+                f"Tile {tile_number}/{len(terrain_tiles)}: no road file; "
+                "copying terrain unchanged.",
+                flush=True,
             )
 
         changed, elevation_bounds = deform_tile(
@@ -650,6 +705,8 @@ def main():
             args.clearance,
             args.edge_buffer,
             args.index_cell_size,
+            tile_number,
+            len(terrain_tiles),
         )
         total_changed += changed
         if triangle_index:
@@ -696,9 +753,11 @@ def main():
 
     print(
         f"Finished: lowered {total_changed} terrain vertices in "
-        f"{tiles_with_roads} road tiles."
+        f"{tiles_with_roads} road tiles; total elapsed "
+        f"{time.monotonic() - started:.1f}s.",
+        flush=True,
     )
-    print(f"Output: {output}")
+    print(f"Output: {output}", flush=True)
 
 
 if __name__ == "__main__":
