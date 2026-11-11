@@ -609,19 +609,19 @@ def generate_tile(tile, pointcloud_files, layers, exclusions, forest_points, for
     ]
     points = load_points(pointcloud_files, bounds)
     if len(points):
-    from shapely.ops import unary_union
+        from shapely.ops import unary_union
 
-    # load_points() returns rows of (x, y, z). Forest footprints need
-    # only horizontal coordinates, so select the first two columns
-    # before unpacking each sampled row.
-    stride = max(1, len(points) // 5000)
-    sampled_xy = points[::stride, :2]
+        # load_points() returns rows of (x, y, z). Forest footprints need
+        # only horizontal coordinates, so select the first two columns
+        # before unpacking each sampled row.
+        stride = max(1, len(points) // 5000)
+        sampled_xy = points[::stride, :2]
 
-    local_layers["forest"] = [
-        unary_union([
-            Point(float(x), float(y)).buffer(12.0)
-            for x, y in sampled_xy
-        ])
+        local_layers["forest"] = [
+            unary_union([
+                Point(float(x), float(y)).buffer(12.0)
+                for x, y in sampled_xy
+            ])
     ]
     else:
         local_layers["forest"] = []
