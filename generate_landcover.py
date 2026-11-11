@@ -101,6 +101,8 @@ CONFIG = {
 }
 
 EPSG = 3067
+GENERATOR_VERSION = 2
+MANIFEST_NAME = "landcover_manifest.json"
 
 
 def stable_rng(*parts):
@@ -431,6 +433,120 @@ def write_vpl(path, bounds, placements, cell_size=25.0):
                 handle.write(struct.pack("<64s8f", key, *placement[1:]))
 
 
+def atomic_replace(path, writer):
+    """Write a generated file through a temporary sibling, then replace it."""
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        writer(temporary)
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def source_signature(path):
+    """Return stable metadata for an input file or relevant source folder."""
+    path = Path(path).resolve()
+    if path.is_file():
+        stat = path.stat()
+        return {
+            "path": str(path),
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        }
+
+    entries = []
+    if path.is_dir():
+        for candidate in sorted(path.rglob("*")):
+            if not candidate.is_file():
+                continue
+            if (
+                candidate.name == "tile_manifest.json"
+                or candidate.name == "download_manifest.csv"
+                or candidate.suffix.lower() in {".gpkg", ".las", ".laz"}
+            ):
+                stat = candidate.stat()
+                entries.append({
+                    "path": str(candidate.relative_to(path)),
+                    "size": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns,
+                })
+    return {"path": str(path), "entries": entries}
+
+
+def run_signature(dem, mtk, pointcloud, buildings, roads):
+    payload = {
+        "generator_version": GENERATOR_VERSION,
+        "config": CONFIG,
+        "dem": source_signature(dem),
+        "mtk": source_signature(mtk),
+        "pointcloud": source_signature(pointcloud),
+        "buildings": source_signature(buildings) if buildings else None,
+        "roads": source_signature(roads) if roads else None,
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def read_resume_state(path, signature, force_rebuild):
+    """Load completed tile records that are safe to reuse."""
+    if force_rebuild or not path.is_file():
+        return {}
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if manifest.get("run_signature") != signature:
+        return {}
+    return {
+        tile["terrain_filename"]: tile
+        for tile in manifest.get("tiles", [])
+        if tile.get("status") == "complete"
+    }
+
+
+def write_manifest(path, signature, tiles, total):
+    payload = {
+        "format": "landcover_manifest_v1",
+        "generator_version": GENERATOR_VERSION,
+        "run_signature": signature,
+        "crs": "EPSG:3067",
+        "placement_format": "VPL1",
+        "tiles": tiles,
+        "config": CONFIG,
+        "total_placements": total,
+    }
+    atomic_replace(
+        path,
+        lambda temporary: temporary.write_text(
+            json.dumps(payload, indent=2),
+            encoding="utf-8",
+        ),
+    )
+
+
+def reusable_tile(output, tile, record):
+    """Check that the recorded tile outputs still exist and are readable."""
+    placement = output / record["placement_filename"]
+    landcover = output / record["landcover_filename"]
+    if not placement.is_file() or placement.stat().st_size < 4:
+        return False
+    if not landcover.is_file():
+        return False
+    try:
+        data = json.loads(landcover.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        data.get("tile") == tile["name"]
+        and data.get("placement_count") == record.get("placement_count")
+    )
+
+
 def generate_tile(tile, pointcloud_files, layers, exclusions, forest_points, forest_codes, output):
     bounds = tile["bounds"]
     xmin, ymin, xmax, ymax = bounds
@@ -551,7 +667,10 @@ def generate_tile(tile, pointcloud_files, layers, exclusions, forest_points, for
                     ))
 
     placements_path = output / "placements" / f"{tile['name']}.vpl"
-    write_vpl(placements_path, bounds, placements)
+    atomic_replace(
+        placements_path,
+        lambda temporary: write_vpl(temporary, bounds, placements),
+    )
 
     resolution = CONFIG["grid_resolution"]
     columns = max(1, math.ceil((xmax - xmin) / resolution))
@@ -566,15 +685,19 @@ def generate_tile(tile, pointcloud_files, layers, exclusions, forest_points, for
             )
             values.append(material_at(point, local_layers))
         material_grid.append(values)
-    (output / "landcover" / f"{tile['name']}.json").write_text(
-        json.dumps({
+    landcover_path = output / "landcover" / f"{tile['name']}.json"
+    atomic_replace(
+        landcover_path,
+        lambda temporary: temporary.write_text(
+            json.dumps({
             "tile": tile["name"],
             "bounds": bounds,
             "resolution": resolution,
             "materials": material_grid,
             "placement_count": len(placements),
-        }),
-        encoding="utf-8",
+            }),
+            encoding="utf-8",
+        ),
     )
     return len(placements)
 
@@ -588,52 +711,80 @@ def main():
     parser.add_argument("--pointcloud", required=True)
     parser.add_argument("--buildings")
     parser.add_argument("--roads")
+    parser.add_argument(
+        "--force-rebuild",
+        action="store_true",
+        help="Regenerate every tile instead of resuming completed tiles.",
+    )
     parser.add_argument("-o", "--output", required=True)
     args = parser.parse_args()
 
     dem = Path(args.dem).resolve()
     mtk = Path(args.mtk).resolve()
     output = Path(args.output).resolve()
-    if output.exists() and any(output.iterdir()):
-        parser.error("Output must be empty or not yet exist.")
     output.mkdir(parents=True, exist_ok=True)
-    (output / "placements").mkdir()
-    (output / "landcover").mkdir()
+    (output / "placements").mkdir(exist_ok=True)
+    (output / "landcover").mkdir(exist_ok=True)
 
     tiles = read_terrain_index(dem)
-    pointcloud_files = read_pointcloud_files(Path(args.pointcloud))
+    pointcloud = Path(args.pointcloud).resolve()
+    pointcloud_files = read_pointcloud_files(pointcloud)
     layers, exclusions, forest_points, forest_codes = load_sources(
         mtk,
         args.buildings,
         args.roads,
     )
+    signature = run_signature(
+        dem,
+        mtk,
+        pointcloud,
+        args.buildings,
+        args.roads,
+    )
+    manifest_path = output / MANIFEST_NAME
+    resume = read_resume_state(
+        manifest_path,
+        signature,
+        args.force_rebuild,
+    )
+    if resume:
+        print(
+            f"Resuming: {len(resume)} completed tiles are available for reuse.",
+            flush=True,
+        )
+    elif manifest_path.is_file() and not args.force_rebuild:
+        print(
+            "Existing manifest does not match the current inputs/config; "
+            "regenerating tiles.",
+            flush=True,
+        )
     print(f"Processing {len(tiles)} tiles and {len(pointcloud_files)} point-cloud files.", flush=True)
     total = 0
     manifest_tiles = []
     for index, tile in enumerate(tiles, 1):
-        count = generate_tile(
-            tile, pointcloud_files, layers, exclusions,
-            forest_points, forest_codes, output,
-        )
+        record = resume.get(tile["name"])
+        if record and reusable_tile(output, tile, record):
+            count = record["placement_count"]
+            print(
+                f"Tile {index}/{len(tiles)}: reusing {count} placements.",
+                flush=True,
+            )
+        else:
+            count = generate_tile(
+                tile, pointcloud_files, layers, exclusions,
+                forest_points, forest_codes, output,
+            )
+            print(f"Tile {index}/{len(tiles)}: {count} placements.", flush=True)
         total += count
-        print(f"Tile {index}/{len(tiles)}: {count} placements.", flush=True)
         manifest_tiles.append({
             "terrain_filename": tile["name"],
             "placement_filename": f"placements/{tile['name']}.vpl",
             "landcover_filename": f"landcover/{tile['name']}.json",
+            "placement_count": count,
+            "status": "complete",
         })
+        write_manifest(manifest_path, signature, manifest_tiles, total)
 
-    (output / "landcover_manifest.json").write_text(
-        json.dumps({
-            "format": "landcover_manifest_v1",
-            "crs": "EPSG:3067",
-            "placement_format": "VPL1",
-            "tiles": manifest_tiles,
-            "config": CONFIG,
-            "total_placements": total,
-        }, indent=2),
-        encoding="utf-8",
-    )
     print(f"Finished: {total} placements in {output}", flush=True)
 
 
