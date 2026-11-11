@@ -477,7 +477,9 @@ def source_signature(path):
 def run_signature(dem, mtk, pointcloud, buildings, roads):
     payload = {
         "generator_version": GENERATOR_VERSION,
-        "config": CONFIG,
+        # JSON object keys must have one comparable type when sort_keys=True.
+        # CONFIG intentionally uses integer LUOKKA keys plus "fallback".
+        "config": json.loads(json.dumps(CONFIG)),
         "dem": source_signature(dem),
         "mtk": source_signature(mtk),
         "pointcloud": source_signature(pointcloud),
