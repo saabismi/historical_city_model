@@ -23,6 +23,7 @@ Requires GDAL/OGR, rasterio, numpy, shapely, and laspy+lazrs.
 """
 
 import argparse
+import csv
 import hashlib
 import json
 import math
@@ -166,12 +167,84 @@ def read_terrain_index(folder):
 
 
 def read_pointcloud_files(folder):
+    """Read the downloader output structure and return manifest-listed files.
+
+    ``download_oldest_pointcloud.py`` writes a manifest at the download root
+    and stores files in its flat ``pointclouds/`` directory. The manifest is
+    the authoritative list because it records the acquisition year and the
+    exact local path. A recursive scan remains a compatibility fallback for
+    older folders that do not contain the manifest.
+    """
+    folder = Path(folder)
+    manifest = folder / "download_manifest.csv"
+
+    if manifest.is_file():
+        files = []
+        years = defaultdict(int)
+        with manifest.open(
+            "r", newline="", encoding="utf-8-sig"
+        ) as handle:
+            reader = csv.DictReader(handle)
+            required = {"year", "local_path"}
+            if not required.issubset(reader.fieldnames or []):
+                raise ValueError(
+                    f"Point-cloud manifest is missing {sorted(required)}: "
+                    f"{manifest}"
+                )
+
+            for row in reader:
+                raw_path = (row.get("local_path") or "").strip()
+                if not raw_path:
+                    raise ValueError(
+                        f"Point-cloud manifest has an empty local_path: "
+                        f"{manifest}"
+                    )
+
+                candidate = Path(raw_path)
+                if not candidate.is_absolute():
+                    candidate = folder / candidate
+                if not candidate.is_file():
+                    fallback = folder / "pointclouds" / candidate.name
+                    if fallback.is_file():
+                        candidate = fallback
+                    else:
+                        raise ValueError(
+                            f"Manifest-listed point cloud does not exist: "
+                            f"{candidate}"
+                        )
+
+                if candidate.suffix.lower() not in {".las", ".laz"}:
+                    raise ValueError(
+                        f"Manifest local_path is not LAS/LAZ: {candidate}"
+                    )
+
+                files.append(candidate.resolve())
+                years[str(row["year"])] += 1
+
+        if not files:
+            raise ValueError(f"Point-cloud manifest contains no files: {manifest}")
+
+        print(
+            f"Point-cloud manifest: {len(files)} files "
+            f"({', '.join(f'{year}: {count}' for year, count in sorted(years.items()))})",
+            flush=True,
+        )
+        return sorted(set(files))
+
     files = sorted(
-        path for path in folder.rglob("*")
-        if path.suffix.lower() in {".las", ".laz"}
+        path.resolve() for path in folder.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".las", ".laz"}
     )
     if not files:
-        raise ValueError(f"No LAS/LAZ files found under {folder}")
+        raise ValueError(
+            f"No download_manifest.csv or LAS/LAZ files found under {folder}. "
+            "Expected the output of download_oldest_pointcloud.py."
+        )
+    print(
+        f"Point-cloud manifest not found; compatibility scan found "
+        f"{len(files)} LAS/LAZ files under {folder}.",
+        flush=True,
+    )
     return files
 
 
@@ -187,6 +260,10 @@ def load_points(files, bounds):
                 or header.maxs[1] < ymin or header.mins[1] > ymax
             ):
                 continue
+            print(
+                f"  Tile bounds intersect point cloud: {filename.name}",
+                flush=True,
+            )
             for block in reader.chunk_iterator(500_000):
                 classification = np.asarray(block.classification)
                 keep = np.isin(classification, CONFIG["tree_classes"])
