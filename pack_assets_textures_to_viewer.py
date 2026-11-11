@@ -6,12 +6,18 @@ This is the viewer-specific final stage. It converts VPL1 placement tiles to
 the existing VEG1 tile format, writes the V4 billboard texture table, and
 copies the land-cover material maps so a future terrain renderer can consume
 them without rerunning placement generation.
+
+With --deform-terrain, this final stage also creates a separate deformed
+terrain folder from existing TRN1 terrain and ROAD1 road tiles. The original
+terrain is never modified.
 """
 
 import argparse
 import json
 import shutil
 import struct
+import subprocess
+import sys
 from pathlib import Path
 
 from PIL import Image
@@ -80,7 +86,23 @@ def main():
     parser.add_argument("--assets", required=True)
     parser.add_argument("-o", "--output", required=True)
     parser.add_argument("--texture-size", type=int, default=256)
+    parser.add_argument(
+        "--deform-terrain",
+        action="store_true",
+        help="Create output/terrain with terrain lowered beneath ROAD1 meshes.",
+    )
+    parser.add_argument(
+        "--terrain",
+        help="Prepared viewer terrain folder used with --deform-terrain.",
+    )
+    parser.add_argument(
+        "--roads",
+        help="Generated viewer road folder used with --deform-terrain.",
+    )
     args = parser.parse_args()
+
+    if args.deform_terrain and (not args.terrain or not args.roads):
+        parser.error("--deform-terrain requires --terrain and --roads.")
 
     source = Path(args.input).resolve()
     assets = Path(args.assets).resolve()
@@ -163,6 +185,22 @@ def main():
             textures_source,
             output / "terrain_textures",
             dirs_exist_ok=True,
+        )
+
+    if args.deform_terrain:
+        script = Path(__file__).with_name("deform_terrain_to_roads.py")
+        subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--terrain",
+                str(Path(args.terrain).resolve()),
+                "--roads",
+                str(Path(args.roads).resolve()),
+                "--output",
+                str(output / "terrain"),
+            ],
+            check=True,
         )
     print(f"Packaged {len(records)} assets and {len(tile_records)} tiles in {output}")
 

@@ -16,7 +16,9 @@ Usage:
 The ROAD1 geometry is used as the source of truth for road widths, shoulders,
 slopes, intersections, and elevation. Terrain vertices under a road, or
 within the configurable edge buffer, are lowered to just below the road
-surface. Existing terrain is never raised.
+surface. Existing terrain is never raised. Road triangles are rasterized to
+terrain cells in compiled rasterio code, so the expensive Python
+cell-by-triangle search is avoided.
 
 Outputs:
     terrain_index.txt
@@ -39,6 +41,9 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+from rasterio.features import rasterize
+from rasterio.transform import from_origin
+from shapely.geometry import Polygon, mapping
 
 
 TRN_MAGIC = b"TRN1"
@@ -373,7 +378,7 @@ def triangle_intersects_rectangle(triangle, minimum, maximum):
 def deform_tile(
     source,
     destination,
-    triangle_index,
+    triangles,
     clearance,
     edge_buffer,
     index_cell_size,
@@ -431,137 +436,50 @@ def deform_tile(
                 dtype="<f4",
             ).copy().reshape((rows + 2, columns + 2))
 
-            xs, ys = terrain_vertex_positions(east, south, xmin, ymax)
+            if triangles:
+                # Rasterize all road triangles in compiled code. This avoids
+                # the previous terrain-cell x road-triangle Python loops.
+                east_spacing = (
+                    float(east[1] - east[0]) if len(east) > 1 else 0.0
+                )
+                south_spacing = (
+                    float(south[1] - south[0]) if len(south) > 1 else 0.0
+                )
+                shapes = []
+                for triangle in triangles:
+                    polygon = Polygon(triangle[:, :2])
+                    if polygon.is_empty or polygon.area <= 1e-9:
+                        continue
+                    if edge_buffer > 0:
+                        polygon = polygon.buffer(edge_buffer)
+                    shapes.append((mapping(polygon), float(triangle[:, 2].min())))
 
-            if triangle_index:
-                for row in range(rows + 2):
-                    for column in range(columns + 2):
-                        point = np.array([xs[row, column], ys[row, column]])
-                        current = float(heights[row, column])
-                        target = None
+                if shapes and east_spacing > 0 and south_spacing > 0:
+                    road_heights = rasterize(
+                        shapes,
+                        out_shape=(rows + 1, columns + 1),
+                        transform=from_origin(
+                            xmin + east[0] - east_spacing,
+                            ymax - south[0] + south_spacing,
+                            east_spacing,
+                            south_spacing,
+                        ),
+                        fill=np.nan,
+                        dtype="float32",
+                        all_touched=True,
+                    )
 
-                        for triangle in indexed_triangles(
-                            triangle_index,
-                            point,
-                            edge_buffer,
-                            index_cell_size,
-                        ):
-                            minimum_x = triangle[:, 0].min() - edge_buffer
-                            maximum_x = triangle[:, 0].max() + edge_buffer
-                            minimum_y = triangle[:, 1].min() - edge_buffer
-                            maximum_y = triangle[:, 1].max() + edge_buffer
-
-                            if not (
-                                minimum_x <= point[0] <= maximum_x
-                                and minimum_y <= point[1] <= maximum_y
-                            ):
-                                continue
-
-                            elevation = triangle_elevation(
-                                point, triangle, edge_buffer
-                            )
-                            if elevation is None:
-                                continue
-
-                            candidate = elevation - clearance
-                            target = candidate if target is None else min(
-                                target, candidate
-                            )
-
-                        if target is not None and math.isfinite(current):
-                            if target < current:
-                                heights[row, column] = target
-                                changed += 1
-
-                    now = time.monotonic()
-                    if now - last_report >= 10.0:
-                        print(
-                            f"Tile {tile_number}/{tile_count}: LOD "
-                            f"{level + 1}/{levels}, row {row + 1}/"
-                            f"{rows + 2}, changed vertices {changed}, "
-                            f"elapsed {now - started:.0f}s",
-                            flush=True,
-                        )
-                        last_report = now
-
-                # Coarse LODs can have a road pass through a terrain cell
-                # without touching any of its vertices. Lower every corner of
-                # an intersecting cell so the rendered terrain cannot bridge
-                # over the road surface.
-                for row in range(rows + 1):
-                    for column in range(columns + 1):
-                        minimum = (
-                            min(xs[row, column], xs[row, column + 1]),
-                            min(ys[row, column], ys[row + 1, column]),
-                        )
-                        maximum = (
-                            max(xs[row, column], xs[row, column + 1]),
-                            max(ys[row, column], ys[row + 1, column]),
-                        )
-                        center = np.array([
-                            (minimum[0] + maximum[0]) * 0.5,
-                            (minimum[1] + maximum[1]) * 0.5,
-                        ])
-                        radius = max(
-                            maximum[0] - minimum[0],
-                            maximum[1] - minimum[1],
-                        )
-                        cell_target = None
-
-                        for triangle in indexed_triangles(
-                            triangle_index,
-                            center,
-                            radius,
-                            index_cell_size,
-                        ):
-                            triangle_minimum = (
-                                triangle[:, 0].min(),
-                                triangle[:, 1].min(),
-                            )
-                            triangle_maximum = (
-                                triangle[:, 0].max(),
-                                triangle[:, 1].max(),
-                            )
-                            if (
-                                triangle_maximum[0] < minimum[0]
-                                or triangle_minimum[0] > maximum[0]
-                                or triangle_maximum[1] < minimum[1]
-                                or triangle_minimum[1] > maximum[1]
-                            ):
-                                continue
-
-                            if triangle_intersects_rectangle(
-                                triangle,
-                                minimum,
-                                maximum,
-                            ):
-                                candidate = float(triangle[:, 2].min())
-                                cell_target = (
-                                    candidate
-                                    if cell_target is None
-                                    else min(cell_target, candidate)
-                                )
-
-                        if cell_target is None:
-                            continue
-
-                        cell_target -= clearance
+                    for row, column in zip(*np.nonzero(np.isfinite(road_heights))):
+                        target = float(road_heights[row, column]) - clearance
                         for vertex_row, vertex_column in (
                             (row, column),
                             (row + 1, column),
                             (row, column + 1),
                             (row + 1, column + 1),
                         ):
-                            current = float(
-                                heights[vertex_row, vertex_column]
-                            )
-                            if (
-                                math.isfinite(current)
-                                and cell_target < current
-                            ):
-                                heights[vertex_row, vertex_column] = (
-                                    cell_target
-                                )
+                            current = float(heights[vertex_row, vertex_column])
+                            if math.isfinite(current) and target < current:
+                                heights[vertex_row, vertex_column] = target
                                 changed += 1
 
             all_values.append(heights[np.isfinite(heights)])
@@ -619,7 +537,10 @@ def main():
         "--index-cell-size",
         type=float,
         default=32.0,
-        help="XY size of the internal road-triangle spatial-index buckets.",
+        help=(
+            "Retained for command-line compatibility; rasterization no "
+            "longer uses Python spatial buckets."
+        ),
     )
     args = parser.parse_args()
 
@@ -671,7 +592,7 @@ def main():
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         road_file = road_files.get(Path(tile["terrain_file"]).name.lower())
-        triangle_index = {}
+        triangles = []
         if road_file is not None:
             if not road_file.is_file():
                 raise ValueError(f"Missing indexed ROAD1 file: {road_file}")
@@ -681,14 +602,9 @@ def main():
                 flush=True,
             )
             triangles = read_road_triangles(road_file)
-            triangle_index = build_triangle_index(
-                triangles,
-                args.index_cell_size,
-            )
             print(
                 f"Tile {tile_number}/{len(terrain_tiles)}: loaded "
-                f"{len(triangles)} road triangles in "
-                f"{len(triangle_index)} spatial buckets.",
+                f"{len(triangles)} road triangles.",
                 flush=True,
             )
         else:
@@ -701,7 +617,7 @@ def main():
         changed, elevation_bounds = deform_tile(
             source,
             destination,
-            triangle_index,
+            triangles,
             args.clearance,
             args.edge_buffer,
             args.index_cell_size,
@@ -709,7 +625,7 @@ def main():
             len(terrain_tiles),
         )
         total_changed += changed
-        if triangle_index:
+        if triangles:
             tiles_with_roads += 1
 
         index_entries.append((
