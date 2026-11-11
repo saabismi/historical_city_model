@@ -385,7 +385,12 @@ def deform_tile(
     tile_number,
     tile_count,
 ):
-    """Copy one TRN1 tile while lowering terrain under road triangles."""
+    """Copy one TRN1 tile while lowering terrain under road triangles.
+
+    ROAD1 triangles are converted to polygons and rasterized once per LOD.
+    This keeps the expensive spatial work in rasterio/GDAL-backed code rather
+    than checking every terrain vertex against every road triangle in Python.
+    """
     changed = 0
     all_values = []
     started = time.monotonic()

@@ -37,6 +37,7 @@ def write_tga(image, destination):
 
 
 def read_vpl(path, asset_info):
+    """Convert physical VPL1 placements to viewer-relative VEG1 scales."""
     with path.open("rb") as handle:
         if handle.read(4) != b"VPL1":
             raise ValueError(f"Unsupported placement file: {path}")
@@ -70,6 +71,7 @@ def read_vpl(path, asset_info):
 
 
 def write_veg(path, placement):
+    """Write one tile-batched VEG1 package for the legacy C++ viewer."""
     xmin, ymax, cell_size, cells, plant_count = placement
     with path.open("wb") as handle:
         handle.write(b"VEG1")
@@ -114,6 +116,8 @@ def main():
     (output / "vegetation").mkdir()
     (output / "landcover").mkdir()
 
+    # The appearance library is independent of placement generation. This
+    # lets billboard art change without recomputing point-cloud placement.
     library = json.loads((assets / "vegetation.json").read_text(encoding="utf-8"))
     asset_info = {}
     records = []

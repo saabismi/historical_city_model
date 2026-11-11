@@ -40,6 +40,9 @@ from shapely.strtree import STRtree
 
 
 CONFIG = {
+    # All distances are metres. Placement spacings are approximate lattice
+    # spacings, not measured object counts. Lower values create more
+    # instances and fuller ground cover at the cost of larger VPL1 files.
     "grid_resolution": 10.0,
     "placement_seed": 12345,
     "tree_classes": (3, 4, 5),
@@ -66,6 +69,9 @@ CONFIG = {
         "varastoalue": "yard",
     },
     "materials": {
+        # These IDs must match the material IDs emitted by
+        # generate_landcover_textures.py. Puisto/lawn intentionally maps to
+        # the default grass material; forests map to forest_floor instead.
         "forest": "forest_floor",
         "wetland": "wetland_dark",
         "rock": "exposed_rock",
@@ -283,6 +289,16 @@ def polygon_for_point(point, layers, name):
 
 
 def write_vpl(path, bounds, placements, cell_size=25.0):
+    """Write VPL1 records grouped into coarse viewer streaming cells.
+
+    Each placement is:
+        asset key, east offset, south offset, ground elevation,
+        physical height, width multiplier, yaw radians, tint, priority.
+
+    The 25 m cells are an exporter/storage grouping. The viewer can load one
+    terrain tile and its complete vegetation package rather than opening one
+    file per plant.
+    """
     xmin, ymin, xmax, ymax = bounds
     cells = defaultdict(list)
     for placement in placements:

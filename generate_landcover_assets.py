@@ -17,6 +17,27 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 
+# Asset configuration:
+#
+# Each entry is:
+#
+#     "placement_key": (height_range_m, width_ratio_range, RGB_colour)
+#
+# ``height_range_m`` is the intended physical height range of the asset in
+# metres. The generator currently uses the midpoint of this range as the
+# canonical height written to asset.json. Placement generation may still
+# apply a per-instance scale.
+#
+# ``width_ratio_range`` is the billboard/appearance width divided by height.
+# A value of 0.4 means a 20 m tree gets an approximately 8 m wide card;
+# values above 1.0 are deliberately used for broad bushes and low grass.
+#
+# ``RGB_colour`` is the base colour used by the procedural placeholder
+# renderer. It is not a terrain colour and does not represent a texture
+# filename. Alpha and small colour variations are added while drawing.
+#
+# The key must exactly match the asset key written by generate_landcover.py.
+# If a new key is added there, add the matching entry here as well.
 ASSETS = {
     "tree_pine": ((22, 32), (0.32, 0.42), (44, 86, 54)),
     "tree_deciduous": ((20, 30), (0.40, 0.55), (82, 132, 58)),
@@ -32,6 +53,7 @@ ASSETS = {
 
 
 def draw_asset(path, width, height, colour, seed):
+    """Draw one simple alpha billboard at a fixed 256x256 source size."""
     rng = random.Random(seed)
     size = 256
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
@@ -97,6 +119,8 @@ def main():
             f"Asset {index + 1}/{len(ASSETS)}: {key}",
             flush=True,
         )
+        # V4 stores physical card dimensions. Keep one canonical asset
+        # height; VPL1 later scales it to each point-cloud measurement.
         height = sum(height_range) / 2.0
         width = height * (sum(width_range) / 2.0)
         asset_dir = output / key

@@ -9,6 +9,10 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 
+# Each value is ``(dark_rgb, light_rgb)``. These are deliberately broad
+# material colours for the prototype procedural generator, not literal
+# satellite colours. The land-cover generator refers to these by ID through
+# its ``materials`` configuration.
 PALETTES = {
     "grass": ((102, 145, 73), (137, 161, 85)),
     "meadow": ((119, 145, 67), (177, 166, 83)),
@@ -21,6 +25,7 @@ PALETTES = {
 
 
 def make_texture(name, size, seed):
+    """Create a deterministic tileable-looking procedural material preview."""
     rng = random.Random(seed)
     dark, light = PALETTES[name]
     image = Image.new("RGB", (size, size), dark)
