@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
 <CodeBlocks_layout_file>
-	<ActiveTarget name="Debug" />
+	<ActiveTarget name="Release" />
 	<File name="buildings.cpp" open="1" top="0" tabpos="5">
 		<Cursor position="369" topLine="0" />
 	</File>
 	<File name="buildings.h" open="1" top="0" tabpos="4">
-		<Cursor position="2859" topLine="0" />
+		<Cursor position="2859" topLine="31" />
 	</File>
 	<File name="main.cpp" open="1" top="1" tabpos="1">
-		<Cursor position="206" topLine="0" />
+		<Cursor position="3816" topLine="134" />
 	</File>
 	<File name="vegetation.cpp" open="1" top="0" tabpos="3">
-		<Cursor position="14115" topLine="408" />
+		<Cursor position="6467" topLine="143" />
 	</File>
 	<File name="vegetation.h" open="1" top="0" tabpos="2">
-		<Cursor position="2531" topLine="18" />
+		<Cursor position="2531" topLine="9" />
 	</File>
 </CodeBlocks_layout_file>

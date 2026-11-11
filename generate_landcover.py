@@ -14,10 +14,10 @@ Example:
     python generate_landcover.py ^
         --dem espoo2008_dem_tiled ^
         --mtk MTK_2009_clipped ^
-        --pointcloud espoo_pointcloud ^
+        --pointcloud espoo_1965_clouds ^
         --buildings MTK_2009_clipped/mtk-rakennus_2009_clipped.gpkg ^
         --roads MTK_2009_clipped/mtk-tie_2009_clipped.gpkg ^
-        -o landcover_output
+        -o espoo2008_landcover_output
 
 Requires GDAL/OGR, rasterio, numpy, shapely, and laspy+lazrs.
 """
