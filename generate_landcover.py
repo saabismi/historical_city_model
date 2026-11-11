@@ -51,8 +51,22 @@ CONFIG = {
     "grass_spacing": 2.5,
     "bush_spacing": 7.0,
     "rock_spacing": 8.0,
-    "road_buffer": 4.0,
     "building_buffer": 3.0,
+    # Keep these road envelopes aligned with generate_road_network.py.
+    # The exclusion radius is half the generated surface width plus its
+    # generated shoulder width.
+    "road_classes": {
+        12111: {"width": 13.0, "shoulder": 2.0},
+        12112: {"width": 13.0, "shoulder": 2.0},
+        12121: {"width": 9.0, "shoulder": 1.2},
+        12122: {"width": 8.0, "shoulder": 1.0},
+        12131: {"width": 6.5, "shoulder": 0.5},
+        12141: {"width": 4.0, "shoulder": 0.4},
+        12313: {"width": 2.5, "shoulder": 0.25},
+        12314: {"width": 2.5, "shoulder": 0.20},
+        12316: {"width": 1.8, "shoulder": 0.20},
+        "fallback": {"width": 4.0, "shoulder": 0.4},
+    },
     "pointcloud_height_floor": 1.5,
     "pointcloud_height_ceiling": 45.0,
     "forest_classification_layer": "metsamaankasvillisuus",
@@ -147,6 +161,19 @@ def read_geometries(path, layer_name, field=None):
         values.append(feature.GetField(field) if field else None)
     dataset = None
     return geometries, values
+
+
+def road_exclusion_radius(luokka):
+    """Return the generated road envelope for one MTK LUOKKA value."""
+    try:
+        code = int(luokka)
+    except (TypeError, ValueError):
+        code = None
+    settings = CONFIG["road_classes"].get(
+        code,
+        CONFIG["road_classes"]["fallback"],
+    )
+    return settings["width"] / 2.0 + settings["shoulder"]
 
 
 def read_terrain_index(folder):
@@ -323,13 +350,23 @@ def load_sources(mtk, buildings, roads):
         path = Path(buildings)
         if path.is_file():
             geometries, _ = read_geometries(path, "rakennus")
-            exclusions.extend(g.buffer(CONFIG["building_buffer"]) for g in geometries)
+            exclusions.extend(
+                geometry.Buffer(CONFIG["building_buffer"])
+                for geometry in geometries
+            )
     if roads:
         path = Path(roads)
         if path.is_file():
             try:
-                geometries, _ = read_geometries(path, "tieviiva")
-                exclusions.extend(g.buffer(CONFIG["road_buffer"]) for g in geometries)
+                geometries, classes = read_geometries(
+                    path,
+                    "tieviiva",
+                    "LUOKKA",
+                )
+                exclusions.extend(
+                    geometry.Buffer(road_exclusion_radius(luokka))
+                    for geometry, luokka in zip(geometries, classes)
+                )
             except ValueError:
                 pass
 
