@@ -117,9 +117,18 @@ def main():
     library = json.loads((assets / "vegetation.json").read_text(encoding="utf-8"))
     asset_info = {}
     records = []
+    print(
+        f"Packing {len(library['assets'])} assets for the viewer...",
+        flush=True,
+    )
     for asset_id, item in enumerate(library["assets"]):
         definition_path = assets / item["definition"]
         definition = json.loads(definition_path.read_text(encoding="utf-8"))
+        print(
+            f"Asset {asset_id + 1}/{len(library['assets'])}: "
+            f"{definition['id']} -> TGA textures",
+            flush=True,
+        )
         asset_info[definition["id"]] = (
             asset_id, definition["plant_height_metres"]
         )
@@ -159,7 +168,16 @@ def main():
 
     manifest = json.loads((source / "landcover_manifest.json").read_text(encoding="utf-8"))
     tile_records = []
-    for tile in manifest["tiles"]:
+    print(
+        f"Packing {len(manifest['tiles'])} placement/land-cover tiles...",
+        flush=True,
+    )
+    for tile_number, tile in enumerate(manifest["tiles"], 1):
+        print(
+            f"Tile {tile_number}/{len(manifest['tiles'])}: "
+            f"converting placements and copying land-cover map",
+            flush=True,
+        )
         input_path = source / tile["placement_filename"]
         output_name = input_path.with_suffix(".veg").name
         write_veg(
@@ -188,6 +206,10 @@ def main():
         )
 
     if args.deform_terrain:
+        print(
+            "Starting terrain deformation beneath ROAD1 road meshes...",
+            flush=True,
+        )
         script = Path(__file__).with_name("deform_terrain_to_roads.py")
         subprocess.run(
             [
@@ -202,7 +224,10 @@ def main():
             ],
             check=True,
         )
-    print(f"Packaged {len(records)} assets and {len(tile_records)} tiles in {output}")
+    print(
+        f"Packaged {len(records)} assets and {len(tile_records)} tiles in {output}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

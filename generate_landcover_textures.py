@@ -2,6 +2,7 @@
 """Generate tileable low-dependency terrain textures for land-cover classes."""
 
 import argparse
+import json
 import random
 from pathlib import Path
 
@@ -55,18 +56,26 @@ def main():
         parser.error("Output folder must be empty or not yet exist.")
     output.mkdir(parents=True, exist_ok=True)
     records = []
+    print(
+        f"Generating {len(PALETTES)} terrain materials in {output}...",
+        flush=True,
+    )
     for index, name in enumerate(PALETTES):
         filename = f"{name}.png"
+        print(
+            f"Material {index + 1}/{len(PALETTES)}: {name}",
+            flush=True,
+        )
         make_texture(name, args.size, args.seed + index).save(output / filename)
         records.append({"id": name, "texture": filename, "tileable": True})
     (output / "terrain_materials.json").write_text(
-        __import__("json").dumps({
+        json.dumps({
             "format": "terrain_materials_v1",
             "materials": records,
         }, indent=2),
         encoding="utf-8",
     )
-    print(f"Generated {len(records)} terrain materials in {output}")
+    print(f"Generated {len(records)} terrain materials in {output}", flush=True)
 
 
 if __name__ == "__main__":

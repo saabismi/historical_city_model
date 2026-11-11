@@ -88,7 +88,15 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
 
     records = []
+    print(
+        f"Generating {len(ASSETS)} billboard assets in {output}...",
+        flush=True,
+    )
     for index, (key, (height_range, width_range, colour)) in enumerate(ASSETS.items()):
+        print(
+            f"Asset {index + 1}/{len(ASSETS)}: {key}",
+            flush=True,
+        )
         height = sum(height_range) / 2.0
         width = height * (sum(width_range) / 2.0)
         asset_dir = output / key
@@ -133,7 +141,7 @@ def main():
         json.dumps({"format": "landcover_assets_v1", "assets": records}, indent=2),
         encoding="utf-8",
     )
-    print(f"Generated {len(records)} assets in {output}")
+    print(f"Generated {len(records)} assets in {output}", flush=True)
 
 
 if __name__ == "__main__":
