@@ -14,7 +14,7 @@ Example:
     python generate_landcover.py ^
         --dem espoo2008_dem_tiled ^
         --mtk MTK_2009_clipped ^
-        --pointcloud espoo_1965_clouds ^
+        --pointcloud espoo1965_clouds ^
         --buildings MTK_2009_clipped/mtk-rakennus_2009_clipped.gpkg ^
         --roads MTK_2009_clipped/mtk-tie_2009_clipped.gpkg ^
         -o espoo2008_landcover_output
@@ -405,32 +405,71 @@ def polygon_for_point(point, layers, name):
 
 
 def write_vpl(path, bounds, placements, cell_size=25.0):
-    """Write VPL1 records grouped into coarse viewer streaming cells.
+    """Write VPL1 placements grouped into tile-relative streaming cells.
 
-    Each placement is:
-        asset key, east offset, south offset, ground elevation,
-        physical height, width multiplier, yaw radians, tint, priority.
+    Parameters:
+        path: Destination file, supplied as a pathlib.Path.
+        bounds: Tile bounds as (xmin, ymin, xmax, ymax), in EPSG:3067.
+        placements: Records containing an asset key followed by eight floats:
+            east offset, south offset, ground elevation, physical height,
+            width multiplier, yaw radians, tint, and priority.
+        cell_size: Streaming-cell size in metres.
 
-    The 25 m cells are an exporter/storage grouping. The viewer can load one
-    terrain tile and its complete vegetation package rather than opening one
-    file per plant.
+    Placement coordinates are already relative to the tile's northwest
+    corner: east = x - xmin and south = ymax - y. Cell indices must therefore
+    be calculated directly from those offsets, without subtracting projected
+    map coordinates again.
+
+    The header retains the projected northwest origin (xmin, ymax).
+    The VPL1 header and placement-record formats remain unchanged.
     """
     xmin, ymin, xmax, ymax = bounds
+
+    if not math.isfinite(cell_size) or cell_size <= 0:
+        raise ValueError("VPL1 cell_size must be finite and positive")
+
     cells = defaultdict(list)
+
     for placement in placements:
-        east, south = placement[1], placement[2]
-        cells[
-            int((east - xmin) // cell_size),
-            int((south - ymin) // cell_size),
-        ].append(placement)
+        east = float(placement[1])
+        south = float(placement[2])
+
+        if (
+            not math.isfinite(east)
+            or not math.isfinite(south)
+            or east < 0
+            or south < 0
+        ):
+            raise ValueError(
+                "VPL1 placement offsets must be finite and non-negative: "
+                f"asset={placement[0]!r}, east={east}, south={south}"
+            )
+
+        # Both offsets are tile-relative; do not subtract xmin or ymin.
+        column = int(math.floor(east / cell_size))
+        row = int(math.floor(south / cell_size))
+        cells[column, row].append(placement)
+
     with path.open("wb") as handle:
         handle.write(b"VPL1")
-        handle.write(struct.pack("<2df2I", xmin, ymax, cell_size, len(cells), len(placements)))
+        handle.write(
+            struct.pack(
+                "<2df2I",
+                xmin,
+                ymax,
+                cell_size,
+                len(cells),
+                len(placements),
+            )
+        )
+
         for (column, row), members in sorted(cells.items()):
             handle.write(struct.pack("<3I", column, row, len(members)))
+
             for placement in members:
                 key = placement[0].encode("utf-8")
                 handle.write(struct.pack("<64s8f", key, *placement[1:]))
+
 
 
 def atomic_replace(path, writer):
@@ -570,15 +609,23 @@ def generate_tile(tile, pointcloud_files, layers, exclusions, forest_points, for
     ]
     points = load_points(pointcloud_files, bounds)
     if len(points):
-        from shapely.ops import unary_union
-        local_layers["forest"] = [
-            unary_union([
-                Point(float(x), float(y)).buffer(12.0)
-                for x, y in points[::max(1, len(points) // 5000)]
-            ])
-        ]
+    from shapely.ops import unary_union
+
+    # load_points() returns rows of (x, y, z). Forest footprints need
+    # only horizontal coordinates, so select the first two columns
+    # before unpacking each sampled row.
+    stride = max(1, len(points) // 5000)
+    sampled_xy = points[::stride, :2]
+
+    local_layers["forest"] = [
+        unary_union([
+            Point(float(x), float(y)).buffer(12.0)
+            for x, y in sampled_xy
+        ])
+    ]
     else:
         local_layers["forest"] = []
+
     placements = []
     with rasterio.open(tile["dem"]) as dem:
         for x, y, z in points:
@@ -791,8 +838,17 @@ def main():
 
 
 if __name__ == "__main__":
+    import traceback
+
     try:
+        # Explicitly choose OGR exception handling instead of relying on
+        # a default that differs between GDAL versions.
+        ogr.UseExceptions()
         main()
     except Exception as error:
+        # Preserve a concise error message while also showing the exact
+        # source line and call stack needed to diagnose subsequent failures.
         print(f"\nERROR: {error}", file=sys.stderr)
+        traceback.print_exc()
         sys.exit(1)
+
