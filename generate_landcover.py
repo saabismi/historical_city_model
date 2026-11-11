@@ -1,25 +1,42 @@
 #!/usr/bin/env python3
 """
-Generate renderer-neutral land-cover, vegetation, and terrain-material data.
+Generate renderer-neutral land-cover maps and VPL1 vegetation placements.
 
-This is the single placement-generation stage. It reads DEM/terrain tiles,
-MTK vector layers, and an independent MTK LiDAR point-cloud directory. It
-does not consume prepared vegetation output.
+Inputs:
+    - DEM tiles described by tile_manifest.json.
+    - MTK vector layers in EPSG:3067.
+    - Independent LAS/LAZ point clouds.
+    - Optional building and road vector files.
 
-The output contains VPL1 placement tiles for trees, bushes, grass, reeds,
-wheat, and rocks, plus a small per-tile land-cover material map. The existing
-viewer packer can consume the placement files after assets are generated.
+Outputs:
+    - placements/<tile>.vpl
+    - landcover/<tile>.json
+    - landcover_manifest.json
 
-Example:
+Processing:
+    - Geometry operations use Shapely after vectors are read through OGR.
+    - Spatial indexes accelerate polygon and nearest-feature queries.
+    - Each worker loads its vector sources once.
+    - Each tile's DEM band is read once.
+    - Only the parent process updates the resume manifest.
+
+Important:
+    Tree placement behavior is retained from the original generator:
+    one tree placement is emitted per accepted LiDAR return, not per
+    individually detected tree. CONFIG["tree_spacing"] remains unused.
+
+Requirements:
+    GDAL/OGR, rasterio, numpy, Shapely >= 2.0, laspy, and lazrs.
+
+Windows example:
     python generate_landcover.py ^
         --dem espoo2008_dem_tiled ^
         --mtk MTK_2009_clipped ^
         --pointcloud espoo1965_clouds ^
-        --buildings MTK_2009_clipped/mtk-rakennus_2009_clipped.gpkg ^
-        --roads MTK_2009_clipped/mtk-tie_2009_clipped.gpkg ^
+        --workers 4 ^
         -o espoo2008_landcover_output
 
-Requires GDAL/OGR, rasterio, numpy, shapely, and laspy+lazrs.
+Use --workers 1 for sequential processing.
 """
 
 import argparse
@@ -27,23 +44,29 @@ import csv
 import hashlib
 import json
 import math
+import multiprocessing
+import os
 import struct
 import sys
+import traceback
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import laspy
 import numpy as np
 import rasterio
+import shapely
 from osgeo import ogr, osr
+from shapely import from_wkb, make_valid
 from shapely.geometry import Point, box
+from shapely.ops import unary_union
+from shapely.prepared import prep
 from shapely.strtree import STRtree
 
 
 CONFIG = {
-    # All distances are metres. Placement spacings are approximate lattice
-    # spacings, not measured object counts. Lower values create more
-    # instances and fuller ground cover at the cost of larger VPL1 files.
+    # Distances are metres. Placement spacings describe approximate lattices.
     "grid_resolution": 10.0,
     "placement_seed": 12345,
     "tree_classes": (3, 4, 5),
@@ -52,9 +75,7 @@ CONFIG = {
     "bush_spacing": 7.0,
     "rock_spacing": 8.0,
     "building_buffer": 3.0,
-    # Keep these road envelopes aligned with generate_road_network.py.
-    # The exclusion radius is half the generated surface width plus its
-    # generated shoulder width.
+    # Exclusion radius = half the road surface width plus shoulder width.
     "road_classes": {
         12111: {"width": 13.0, "shoulder": 2.0},
         12112: {"width": 13.0, "shoulder": 2.0},
@@ -84,9 +105,6 @@ CONFIG = {
         "varastoalue": "yard",
     },
     "materials": {
-        # These IDs must match the material IDs emitted by
-        # generate_landcover_textures.py. Puisto/lawn intentionally maps to
-        # the default grass material; forests map to forest_floor instead.
         "forest": "forest_floor",
         "wetland": "wetland_dark",
         "rock": "exposed_rock",
@@ -101,76 +119,217 @@ CONFIG = {
 }
 
 EPSG = 3067
-GENERATOR_VERSION = 2
+
+# Incremented because geometry handling and VPL cell indexing were corrected.
+# Older manifests will therefore not silently reuse incompatible outputs.
+GENERATOR_VERSION = 3
 MANIFEST_NAME = "landcover_manifest.json"
+
+VPL_HEADER_FORMAT = "<2df2I"
+VPL_CELL_FORMAT = "<3I"
+VPL_RECORD_FORMAT = "<64s8f"
+
+# This state belongs to each individual process, never shared between workers.
+_WORKER_STATE = None
+
+
+def check_dependencies():
+    """Require Shapely 2.x spatial-index semantics used by this script."""
+    major = int(shapely.__version__.split(".", 1)[0])
+    if major < 2:
+        raise RuntimeError(
+            f"Shapely >= 2.0 is required; installed version is "
+            f"{shapely.__version__}."
+        )
 
 
 def stable_rng(*parts):
+    """Create a deterministic random generator from stable input labels."""
     digest = hashlib.blake2b(
-        (":".join(map(str, parts))).encode("utf-8"),
+        ":".join(map(str, parts)).encode("utf-8"),
         digest_size=8,
     ).digest()
     return np.random.default_rng(int.from_bytes(digest, "little"))
 
 
 def normalize_crs(crs):
+    """Clone an OGR CRS and use traditional GIS axis ordering."""
     result = crs.Clone()
     result.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     return result
 
 
-def open_layer(path, layer_name):
-    dataset = ogr.Open(str(path), 0)
-    if dataset is None:
-        raise ValueError(f"Cannot open vector source: {path}")
-    layer = dataset.GetLayerByName(layer_name)
-    if layer is None:
-        dataset = None
-        raise ValueError(f"Layer {layer_name!r} not found in {path}")
-    source_crs = layer.GetSpatialRef()
-    if source_crs is None:
-        dataset = None
-        raise ValueError(f"Layer has no CRS: {path}:{layer_name}")
-    if not normalize_crs(source_crs).IsSame(
-        normalize_crs(_epsg_3067())
-    ):
-        dataset = None
-        raise ValueError(f"Expected EPSG:3067: {path}:{layer_name}")
-    return dataset, layer
-
-
 def _epsg_3067():
+    """Construct the expected projected coordinate reference system."""
     crs = osr.SpatialReference()
     crs.ImportFromEPSG(EPSG)
     crs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     return crs
 
 
+def open_layer(path, layer_name):
+    """Open an OGR vector layer and require EPSG:3067.
+
+    Return the dataset and layer together so the dataset remains alive while
+    its layer is being read.
+    """
+    dataset = ogr.Open(str(path), 0)
+    if dataset is None:
+        raise ValueError(f"Cannot open vector source: {path}")
+
+    layer = dataset.GetLayerByName(layer_name)
+    if layer is None:
+        raise ValueError(f"Layer {layer_name!r} not found in {path}")
+
+    source_crs = layer.GetSpatialRef()
+    if source_crs is None:
+        raise ValueError(f"Layer has no CRS: {path}:{layer_name}")
+
+    if not normalize_crs(source_crs).IsSame(_epsg_3067()):
+        raise ValueError(f"Expected EPSG:3067: {path}:{layer_name}")
+
+    return dataset, layer
+
+
+def available_layer_names(path):
+    """Return the layer names present in an existing vector dataset."""
+    dataset = ogr.Open(str(path), 0)
+    if dataset is None:
+        raise ValueError(f"Cannot open vector source: {path}")
+
+    try:
+        return {
+            dataset.GetLayerByIndex(index).GetName()
+            for index in range(dataset.GetLayerCount())
+        }
+    finally:
+        dataset = None
+
+
 def read_geometries(path, layer_name, field=None):
+    """Read OGR features and immediately convert their geometry to Shapely.
+
+    Return parallel lists of geometries and optional attribute values.
+    Invalid geometries are repaired before they are used in spatial queries.
+    No borrowed OGR geometry references escape this function.
+    """
     dataset, layer = open_layer(path, layer_name)
     geometries = []
     values = []
-    for feature in layer:
-        geometry = feature.GetGeometryRef()
-        if geometry is None or geometry.IsEmpty():
-            continue
-        shape = ogr.CreateGeometryFromWkb(geometry.ExportToWkb())
-        if not shape.IsValid():
-            shape = shape.MakeValid()
-        if shape is None or shape.IsEmpty():
-            continue
-        geometries.append(shape)
-        values.append(feature.GetField(field) if field else None)
-    dataset = None
-    return geometries, values
+
+    try:
+        if field and layer.GetLayerDefn().GetFieldIndex(field) < 0:
+            raise ValueError(
+                f"Field {field!r} not found in {path}:{layer_name}"
+            )
+
+        for feature in layer:
+            geometry = feature.GetGeometryRef()
+            if geometry is None or geometry.IsEmpty():
+                continue
+
+            shape = from_wkb(bytes(geometry.ExportToWkb()))
+            if not shape.is_valid:
+                shape = make_valid(shape)
+
+            if shape is None or shape.is_empty:
+                continue
+
+            geometries.append(shape)
+            values.append(feature.GetField(field) if field else None)
+
+        return geometries, values
+    finally:
+        dataset = None
+
+
+class GeometryIndex:
+    """Store Shapely geometries with an optional STRtree spatial index.
+
+    Shapely 2.x STRtree methods return indices into the stored geometry list.
+    Empty collections are handled without constructing an index.
+    """
+
+    def __init__(self, geometries):
+        """Retain non-empty geometries and build their spatial index."""
+        self.geometries = [
+            geometry
+            for geometry in geometries
+            if geometry is not None and not geometry.is_empty
+        ]
+        self.tree = (
+            STRtree(self.geometries)
+            if self.geometries
+            else None
+        )
+
+    def intersecting(self, geometry):
+        """Return stored geometries intersecting the supplied geometry."""
+        if self.tree is None:
+            return []
+
+        indices = self.tree.query(geometry, predicate="intersects")
+        return [self.geometries[int(index)] for index in indices]
+
+    def contains_point(self, point):
+        """Test strict point containment, retaining original boundary rules.
+
+        The query is point.within(stored_polygon), equivalent to the
+        stored polygon's lowercase Shapely contains(point) operation.
+        """
+        if self.tree is None:
+            return False
+
+        return len(self.tree.query(point, predicate="within")) > 0
+
+    def intersects_point(self, point):
+        """Test whether any stored geometry touches or contains the point."""
+        if self.tree is None:
+            return False
+
+        return len(self.tree.query(point, predicate="intersects")) > 0
+
+
+class DemSampler:
+    """Read one DEM band once and serve scalar ground-elevation samples."""
+
+    def __init__(self, dataset):
+        """Cache the band, validity mask, and inverse affine transform."""
+        band = dataset.read(1, masked=True)
+        self.values = np.asarray(band.data)
+        self.mask = np.ma.getmaskarray(band)
+        self.inverse_transform = ~dataset.transform
+        self.height = dataset.height
+        self.width = dataset.width
+
+    def sample(self, x, y):
+        """Return the containing pixel's elevation, or None if invalid."""
+        column_float, row_float = self.inverse_transform * (x, y)
+        row = math.floor(row_float)
+        column = math.floor(column_float)
+
+        if (
+            row < 0
+            or row >= self.height
+            or column < 0
+            or column >= self.width
+        ):
+            return None
+
+        if self.mask[row, column]:
+            return None
+
+        value = float(self.values[row, column])
+        return value if math.isfinite(value) else None
 
 
 def road_exclusion_radius(luokka):
-    """Return the generated road envelope for one MTK LUOKKA value."""
+    """Return half the configured road width plus its shoulder width."""
     try:
         code = int(luokka)
     except (TypeError, ValueError):
         code = None
+
     settings = CONFIG["road_classes"].get(
         code,
         CONFIG["road_classes"]["fallback"],
@@ -179,59 +338,84 @@ def road_exclusion_radius(luokka):
 
 
 def read_terrain_index(folder):
-    with (folder / "tile_manifest.json").open(encoding="utf-8") as handle:
+    """Read DEM-backed tiles from the terrain manifest and validate bounds."""
+    manifest_path = folder / "tile_manifest.json"
+    with manifest_path.open(encoding="utf-8") as handle:
         manifest = json.load(handle)
+
     entries = []
+    names = set()
+
     for tile in manifest["tiles"]:
         bounds = tile.get("core_bounds")
-        if bounds and tile.get("dem"):
-            entries.append({
-                "name": tile["tile"],
-                "bounds": tuple(bounds),
-                "dem": folder / tile["dem"],
-            })
+        if not bounds or not tile.get("dem"):
+            continue
+
+        name = tile["tile"]
+        if name in names:
+            raise ValueError(f"Duplicate terrain tile name: {name}")
+        names.add(name)
+
+        if len(bounds) != 4:
+            raise ValueError(f"Invalid core_bounds for tile {name}")
+
+        bounds = tuple(float(value) for value in bounds)
+        xmin, ymin, xmax, ymax = bounds
+        if (
+            not all(math.isfinite(value) for value in bounds)
+            or xmax <= xmin
+            or ymax <= ymin
+        ):
+            raise ValueError(f"Invalid core_bounds for tile {name}: {bounds}")
+
+        dem_path = folder / tile["dem"]
+        if not dem_path.is_file():
+            raise ValueError(f"DEM does not exist: {dem_path}")
+
+        entries.append({
+            "name": name,
+            "bounds": bounds,
+            "dem": dem_path,
+        })
+
     if not entries:
         raise ValueError("No DEM-backed tiles found in tile_manifest.json")
+
     return entries
 
 
 def read_pointcloud_files(folder):
-    """Read the downloader output structure and return manifest-listed files.
-
-    ``download_oldest_pointcloud.py`` writes a manifest at the download root
-    and stores files in its flat ``pointclouds/`` directory. The manifest is
-    the authoritative list because it records the acquisition year and the
-    exact local path. A recursive scan remains a compatibility fallback for
-    older folders that do not contain the manifest.
-    """
+    """Resolve manifest-listed LAS/LAZ files, with a legacy scan fallback."""
     folder = Path(folder)
     manifest = folder / "download_manifest.csv"
 
     if manifest.is_file():
         files = []
         years = defaultdict(int)
+
         with manifest.open(
             "r", newline="", encoding="utf-8-sig"
         ) as handle:
             reader = csv.DictReader(handle)
             required = {"year", "local_path"}
+
             if not required.issubset(reader.fieldnames or []):
                 raise ValueError(
-                    f"Point-cloud manifest is missing {sorted(required)}: "
-                    f"{manifest}"
+                    f"Point-cloud manifest requires columns "
+                    f"{sorted(required)}: {manifest}"
                 )
 
             for row in reader:
                 raw_path = (row.get("local_path") or "").strip()
                 if not raw_path:
                     raise ValueError(
-                        f"Point-cloud manifest has an empty local_path: "
-                        f"{manifest}"
+                        f"Empty local_path in point-cloud manifest: {manifest}"
                     )
 
                 candidate = Path(raw_path)
                 if not candidate.is_absolute():
                     candidate = folder / candidate
+
                 if not candidate.is_file():
                     fallback = folder / "pointclouds" / candidate.name
                     if fallback.is_file():
@@ -251,132 +435,179 @@ def read_pointcloud_files(folder):
                 years[str(row["year"])] += 1
 
         if not files:
-            raise ValueError(f"Point-cloud manifest contains no files: {manifest}")
+            raise ValueError(
+                f"Point-cloud manifest contains no files: {manifest}"
+            )
 
+        year_summary = ", ".join(
+            f"{year}: {count}"
+            for year, count in sorted(years.items())
+        )
         print(
-            f"Point-cloud manifest: {len(files)} files "
-            f"({', '.join(f'{year}: {count}' for year, count in sorted(years.items()))})",
+            f"Point-cloud manifest: {len(files)} files ({year_summary})",
             flush=True,
         )
         return sorted(set(files))
 
     files = sorted(
-        path.resolve() for path in folder.rglob("*")
+        path.resolve()
+        for path in folder.rglob("*")
         if path.is_file() and path.suffix.lower() in {".las", ".laz"}
     )
+
     if not files:
         raise ValueError(
-            f"No download_manifest.csv or LAS/LAZ files found under {folder}. "
-            "Expected the output of download_oldest_pointcloud.py."
+            f"No download_manifest.csv or LAS/LAZ files found under {folder}."
         )
+
     print(
         f"Point-cloud manifest not found; compatibility scan found "
-        f"{len(files)} LAS/LAZ files under {folder}.",
+        f"{len(files)} LAS/LAZ files.",
         flush=True,
     )
     return files
 
 
-def load_points(files, bounds):
-    """Load candidate vegetation points intersecting one tile bounds."""
-    xmin, ymin, xmax, ymax = bounds
-    chunks = []
+def index_pointcloud_files(files):
+    """Read file bounds once per worker to avoid repeated header-only opens."""
+    entries = []
+
     for filename in files:
         with laspy.open(filename) as reader:
-            header = reader.header
-            if (
-                header.maxs[0] < xmin or header.mins[0] > xmax
-                or header.maxs[1] < ymin or header.mins[1] > ymax
-            ):
-                continue
-            print(
-                f"  Tile bounds intersect point cloud: {filename.name}",
-                flush=True,
-            )
+            entries.append({
+                "path": Path(filename),
+                "bounds": (
+                    float(reader.header.mins[0]),
+                    float(reader.header.mins[1]),
+                    float(reader.header.maxs[0]),
+                    float(reader.header.maxs[1]),
+                ),
+            })
+
+    return entries
+
+
+def load_points(file_entries, bounds, tile_name):
+    """Load classified vegetation XYZ points intersecting one terrain tile."""
+    xmin, ymin, xmax, ymax = bounds
+    chunks = []
+
+    for entry in file_entries:
+        cloud_xmin, cloud_ymin, cloud_xmax, cloud_ymax = entry["bounds"]
+
+        if (
+            cloud_xmax < xmin
+            or cloud_xmin > xmax
+            or cloud_ymax < ymin
+            or cloud_ymin > ymax
+        ):
+            continue
+
+        filename = entry["path"]
+        print(
+            f"  [{tile_name}] Point cloud: {filename.name}",
+            flush=True,
+        )
+
+        with laspy.open(filename) as reader:
             for block in reader.chunk_iterator(500_000):
                 classification = np.asarray(block.classification)
                 keep = np.isin(classification, CONFIG["tree_classes"])
+
+                if not np.any(keep):
+                    continue
+
                 x = np.asarray(block.x)
                 y = np.asarray(block.y)
                 keep &= (x >= xmin) & (x <= xmax)
                 keep &= (y >= ymin) & (y <= ymax)
+
                 if np.any(keep):
-                    chunks.append(np.column_stack((
-                        x[keep], y[keep], np.asarray(block.z)[keep],
-                    )))
-    return np.concatenate(chunks) if chunks else np.empty((0, 3))
+                    chunks.append(
+                        np.column_stack((
+                            x[keep],
+                            y[keep],
+                            np.asarray(block.z)[keep],
+                        ))
+                    )
 
+    if not chunks:
+        return np.empty((0, 3), dtype=np.float64)
 
-def sample_dem(dataset, x, y):
-    row, column = dataset.index(x, y)
-    if row < 0 or row >= dataset.height or column < 0 or column >= dataset.width:
-        return None
-    value = dataset.read(1, window=((row, row + 1), (column, column + 1)))[0, 0]
-    if dataset.nodata is not None and value == dataset.nodata:
-        return None
-    return float(value) if np.isfinite(value) else None
+    return np.concatenate(chunks)
 
 
 def load_sources(mtk, buildings, roads):
+    """Load polygon layers, exclusion buffers, and forest classifications.
+
+    All returned geometries are Shapely objects. Missing optional MTK
+    classification layers are allowed, but malformed present layers fail
+    explicitly rather than silently bypassing CRS validation.
+    """
     layers = defaultdict(list)
-    for filename, layer_name in (
-        (mtk / "mtk-muut_2009_clipped.gpkg", None),
-        (mtk / "mtk-vakavesi_2009_clipped.gpkg", None),
+
+    for filename in (
+        mtk / "mtk-muut_2009_clipped.gpkg",
+        mtk / "mtk-vakavesi_2009_clipped.gpkg",
     ):
         if not filename.is_file():
             continue
-        dataset = ogr.Open(str(filename), 0)
-        for index in range(dataset.GetLayerCount()):
-            layer = dataset.GetLayerByIndex(index)
-            name = layer.GetName()
+
+        names = available_layer_names(filename)
+        for name in sorted(names):
             if name in CONFIG["polygon_layers"]:
                 geometries, _ = read_geometries(filename, name)
                 layers[CONFIG["polygon_layers"][name]].extend(geometries)
-        dataset = None
 
-    forest_file = mtk / "mtk-muut_2009_clipped.gpkg"
     forest_points = []
     forest_codes = []
-    if forest_file.is_file():
-        try:
-            forest_points, forest_codes = read_geometries(
-                forest_file,
-                CONFIG["forest_classification_layer"],
-                CONFIG["forest_classification_field"],
-            )
-        except ValueError:
-            pass
+    forest_file = mtk / "mtk-muut_2009_clipped.gpkg"
+    forest_layer = CONFIG["forest_classification_layer"]
+
+    if (
+        forest_file.is_file()
+        and forest_layer in available_layer_names(forest_file)
+    ):
+        forest_points, forest_codes = read_geometries(
+            forest_file,
+            forest_layer,
+            CONFIG["forest_classification_field"],
+        )
 
     exclusions = []
+
     if buildings:
         path = Path(buildings)
-        if path.is_file():
-            geometries, _ = read_geometries(path, "rakennus")
-            exclusions.extend(
-                geometry.Buffer(CONFIG["building_buffer"])
-                for geometry in geometries
-            )
+        if not path.is_file():
+            raise ValueError(f"Building source does not exist: {path}")
+
+        geometries, _ = read_geometries(path, "rakennus")
+        exclusions.extend(
+            geometry.buffer(CONFIG["building_buffer"])
+            for geometry in geometries
+        )
+
     if roads:
         path = Path(roads)
-        if path.is_file():
-            try:
-                geometries, classes = read_geometries(
-                    path,
-                    "tieviiva",
-                    "LUOKKA",
-                )
-                exclusions.extend(
-                    geometry.Buffer(road_exclusion_radius(luokka))
-                    for geometry, luokka in zip(geometries, classes)
-                )
-            except ValueError:
-                pass
+        if not path.is_file():
+            raise ValueError(f"Road source does not exist: {path}")
+
+        geometries, classes = read_geometries(path, "tieviiva", "LUOKKA")
+        exclusions.extend(
+            geometry.buffer(road_exclusion_radius(luokka))
+            for geometry, luokka in zip(geometries, classes)
+        )
 
     return layers, exclusions, forest_points, forest_codes
 
 
 def tree_species(code):
-    code = int(code) if code is not None else 0
+    """Map an MTK forest classification to the original tree asset key."""
+    try:
+        code = int(code) if code is not None else 0
+    except (TypeError, ValueError):
+        code = 0
+
     if code in {32710, 32714}:
         return "tree_pine"
     if code == 32713:
@@ -384,44 +615,53 @@ def tree_species(code):
     return "tree_mixed"
 
 
-def inside_any(point, geometries):
-    return any(geometry.Contains(point) for geometry in geometries)
+def inside_any(point, geometry_index):
+    """Test polygon containment using Shapely, never OGR Contains()."""
+    return (
+        geometry_index is not None
+        and geometry_index.contains_point(point)
+    )
 
 
 def material_at(point, layers):
-    priority = (
-        ("yard", 100), ("rock", 90), ("wetland", 80),
-        ("agriculture", 70), ("meadow", 60), ("lawn", 50),
-        ("cemetery", 50), ("reed", 40),
-    )
-    for name, _ in priority:
-        if inside_any(point, layers.get(name, [])):
+    """Return the highest-priority land-cover category at one point."""
+    for name in (
+        "yard",
+        "rock",
+        "wetland",
+        "agriculture",
+        "meadow",
+        "lawn",
+        "cemetery",
+        "reed",
+    ):
+        if inside_any(point, layers.get(name)):
             return name
-    return "forest" if inside_any(point, layers.get("forest", [])) else "exposed"
+
+    if inside_any(point, layers.get("forest")):
+        return "forest"
+
+    return "exposed"
 
 
 def polygon_for_point(point, layers, name):
-    return inside_any(point, layers.get(name, []))
+    """Test whether a point is strictly inside a named land-cover category."""
+    return inside_any(point, layers.get(name))
 
 
 def write_vpl(path, bounds, placements, cell_size=25.0):
-    """Write VPL1 placements grouped into tile-relative streaming cells.
+    """Write the original VPL1 binary layout using correct local cells.
 
-    Parameters:
-        path: Destination file, supplied as a pathlib.Path.
-        bounds: Tile bounds as (xmin, ymin, xmax, ymax), in EPSG:3067.
-        placements: Records containing an asset key followed by eight floats:
-            east offset, south offset, ground elevation, physical height,
-            width multiplier, yaw radians, tint, and priority.
-        cell_size: Streaming-cell size in metres.
+    Each placement contains:
+        asset key, east offset, south offset, ground elevation,
+        physical height, width multiplier, yaw, tint, and priority.
 
-    Placement coordinates are already relative to the tile's northwest
-    corner: east = x - xmin and south = ymax - y. Cell indices must therefore
-    be calculated directly from those offsets, without subtracting projected
-    map coordinates again.
+    Offsets are already relative to the tile's northwest corner:
+        east = x - xmin
+        south = ymax - y
 
-    The header retains the projected northwest origin (xmin, ymax).
-    The VPL1 header and placement-record formats remain unchanged.
+    The header stores the projected northwest origin. Cell indices are
+    calculated from local offsets without subtracting that origin again.
     """
     xmin, ymin, xmax, ymax = bounds
 
@@ -431,30 +671,28 @@ def write_vpl(path, bounds, placements, cell_size=25.0):
     cells = defaultdict(list)
 
     for placement in placements:
-        east = float(placement[1])
-        south = float(placement[2])
+        if len(placement) != 9:
+            raise ValueError(f"Invalid VPL1 placement: {placement!r}")
 
-        if (
-            not math.isfinite(east)
-            or not math.isfinite(south)
-            or east < 0
-            or south < 0
-        ):
+        values = tuple(float(value) for value in placement[1:])
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError(f"Non-finite VPL1 placement: {placement!r}")
+
+        east, south = values[:2]
+        if east < 0 or south < 0:
             raise ValueError(
-                "VPL1 placement offsets must be finite and non-negative: "
-                f"asset={placement[0]!r}, east={east}, south={south}"
+                f"Negative VPL1 offsets: east={east}, south={south}"
             )
 
-        # Both offsets are tile-relative; do not subtract xmin or ymin.
-        column = int(math.floor(east / cell_size))
-        row = int(math.floor(south / cell_size))
+        column = math.floor(east / cell_size)
+        row = math.floor(south / cell_size)
         cells[column, row].append(placement)
 
     with path.open("wb") as handle:
         handle.write(b"VPL1")
         handle.write(
             struct.pack(
-                "<2df2I",
+                VPL_HEADER_FORMAT,
                 xmin,
                 ymax,
                 cell_size,
@@ -464,17 +702,30 @@ def write_vpl(path, bounds, placements, cell_size=25.0):
         )
 
         for (column, row), members in sorted(cells.items()):
-            handle.write(struct.pack("<3I", column, row, len(members)))
+            handle.write(
+                struct.pack(VPL_CELL_FORMAT, column, row, len(members))
+            )
 
             for placement in members:
                 key = placement[0].encode("utf-8")
-                handle.write(struct.pack("<64s8f", key, *placement[1:]))
+                if len(key) > 64:
+                    raise ValueError(
+                        f"VPL1 asset key exceeds 64 bytes: {placement[0]!r}"
+                    )
 
+                handle.write(
+                    struct.pack(
+                        VPL_RECORD_FORMAT,
+                        key,
+                        *placement[1:],
+                    )
+                )
 
 
 def atomic_replace(path, writer):
-    """Write a generated file through a temporary sibling, then replace it."""
-    temporary = path.with_name(path.name + ".tmp")
+    """Write through a process-specific temporary sibling, then replace."""
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+
     try:
         writer(temporary)
         temporary.replace(path)
@@ -484,8 +735,13 @@ def atomic_replace(path, writer):
 
 
 def source_signature(path):
-    """Return stable metadata for an input file or relevant source folder."""
+    """Return input path, size, and modification-time metadata.
+
+    Directory signatures include vector, point-cloud, and common DEM files,
+    along with the two input manifests.
+    """
     path = Path(path).resolve()
+
     if path.is_file():
         stat = path.stat()
         return {
@@ -494,30 +750,41 @@ def source_signature(path):
             "mtime_ns": stat.st_mtime_ns,
         }
 
+    if not path.is_dir():
+        raise ValueError(f"Input path does not exist: {path}")
+
+    relevant_suffixes = {
+        ".gpkg", ".las", ".laz",
+        ".tif", ".tiff", ".vrt", ".img", ".bil", ".asc",
+    }
+
     entries = []
-    if path.is_dir():
-        for candidate in sorted(path.rglob("*")):
-            if not candidate.is_file():
-                continue
-            if (
-                candidate.name == "tile_manifest.json"
-                or candidate.name == "download_manifest.csv"
-                or candidate.suffix.lower() in {".gpkg", ".las", ".laz"}
-            ):
-                stat = candidate.stat()
-                entries.append({
-                    "path": str(candidate.relative_to(path)),
-                    "size": stat.st_size,
-                    "mtime_ns": stat.st_mtime_ns,
-                })
+    for candidate in sorted(path.rglob("*")):
+        if not candidate.is_file():
+            continue
+
+        if (
+            candidate.name in {
+                "tile_manifest.json",
+                "download_manifest.csv",
+            }
+            or candidate.suffix.lower() in relevant_suffixes
+        ):
+            stat = candidate.stat()
+            entries.append({
+                "path": str(candidate.relative_to(path)),
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            })
+
     return {"path": str(path), "entries": entries}
 
 
 def run_signature(dem, mtk, pointcloud, buildings, roads):
+    """Hash generation settings and inputs; worker count is intentionally absent."""
     payload = {
         "generator_version": GENERATOR_VERSION,
-        # JSON object keys must have one comparable type when sort_keys=True.
-        # CONFIG intentionally uses integer LUOKKA keys plus "fallback".
+        # Normalize mixed integer/string road keys before sorting JSON keys.
         "config": json.loads(json.dumps(CONFIG)),
         "dem": source_signature(dem),
         "mtk": source_signature(mtk),
@@ -525,32 +792,46 @@ def run_signature(dem, mtk, pointcloud, buildings, roads):
         "buildings": source_signature(buildings) if buildings else None,
         "roads": source_signature(roads) if roads else None,
     }
+
     encoded = json.dumps(
         payload,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
     return hashlib.sha256(encoded).hexdigest()
 
 
 def read_resume_state(path, signature, force_rebuild):
-    """Load completed tile records that are safe to reuse."""
+    """Return completed tile records only when the run signature matches."""
     if force_rebuild or not path.is_file():
         return {}
+
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
+
+    if not isinstance(manifest, dict):
+        return {}
+
     if manifest.get("run_signature") != signature:
         return {}
-    return {
-        tile["terrain_filename"]: tile
-        for tile in manifest.get("tiles", [])
-        if tile.get("status") == "complete"
-    }
+
+    records = {}
+    for tile in manifest.get("tiles", []):
+        if (
+            isinstance(tile, dict)
+            and tile.get("status") == "complete"
+            and tile.get("terrain_filename")
+        ):
+            records[tile["terrain_filename"]] = tile
+
+    return records
 
 
 def write_manifest(path, signature, tiles, total):
+    """Atomically checkpoint completed tiles and their placement total."""
     payload = {
         "format": "landcover_manifest_v1",
         "generator_version": GENERATOR_VERSION,
@@ -561,6 +842,7 @@ def write_manifest(path, signature, tiles, total):
         "config": CONFIG,
         "total_placements": total,
     }
+
     atomic_replace(
         path,
         lambda temporary: temporary.write_text(
@@ -571,151 +853,265 @@ def write_manifest(path, signature, tiles, total):
 
 
 def reusable_tile(output, tile, record):
-    """Check that the recorded tile outputs still exist and are readable."""
-    placement = output / record["placement_filename"]
-    landcover = output / record["landcover_filename"]
-    if not placement.is_file() or placement.stat().st_size < 4:
-        return False
-    if not landcover.is_file():
-        return False
+    """Validate a saved material map and the VPL1 header/file length."""
     try:
+        placement = output / record["placement_filename"]
+        landcover = output / record["landcover_filename"]
+        count = record["placement_count"]
+
+        if not isinstance(count, int) or count < 0:
+            return False
+
+        if not placement.is_file() or not landcover.is_file():
+            return False
+
+        header_size = struct.calcsize(VPL_HEADER_FORMAT)
+
+        with placement.open("rb") as handle:
+            if handle.read(4) != b"VPL1":
+                return False
+
+            header = handle.read(header_size)
+            if len(header) != header_size:
+                return False
+
+            origin_x, origin_y, cell_size, cell_count, total = struct.unpack(
+                VPL_HEADER_FORMAT,
+                header,
+            )
+
+        xmin, ymin, xmax, ymax = tile["bounds"]
+        if (
+            origin_x != xmin
+            or origin_y != ymax
+            or not math.isfinite(cell_size)
+            or cell_size <= 0
+            or total != count
+            or cell_count > total
+        ):
+            return False
+
+        expected_size = (
+            4
+            + header_size
+            + cell_count * struct.calcsize(VPL_CELL_FORMAT)
+            + total * struct.calcsize(VPL_RECORD_FORMAT)
+        )
+        if placement.stat().st_size != expected_size:
+            return False
+
         data = json.loads(landcover.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+
+        return (
+            isinstance(data, dict)
+            and data.get("tile") == tile["name"]
+            and data.get("placement_count") == count
+            and data.get("bounds") == list(tile["bounds"])
+        )
+    except (
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+        struct.error,
+    ):
         return False
-    return (
-        data.get("tile") == tile["name"]
-        and data.get("placement_count") == record.get("placement_count")
-    )
 
 
-def generate_tile(tile, pointcloud_files, layers, exclusions, forest_points, forest_codes, output):
+def generate_tile(tile, state):
+    """Generate one tile using vector and cloud indexes owned by its worker."""
     bounds = tile["bounds"]
     xmin, ymin, xmax, ymax = bounds
     tile_box = box(*bounds)
-    # Convert OGR geometries to Shapely once per tile for inexpensive queries.
-    from shapely import from_wkt
-    local_layers = {
-        name: [
-            from_wkt(geometry.ExportToWkt())
-            for geometry in geometries
-            if from_wkt(geometry.ExportToWkt()).intersects(tile_box)
-        ]
-        for name, geometries in layers.items()
-    }
-    local_exclusions = [
-        from_wkt(geometry.ExportToWkt())
-        for geometry in exclusions
-        if from_wkt(geometry.ExportToWkt()).intersects(tile_box)
-    ]
-    points = load_points(pointcloud_files, bounds)
-    if len(points):
-        from shapely.ops import unary_union
 
-        # load_points() returns rows of (x, y, z). Forest footprints need
-        # only horizontal coordinates, so select the first two columns
-        # before unpacking each sampled row.
+    # Sources have already been converted to Shapely once per worker.
+    local_layers = {
+        name: GeometryIndex(index.intersecting(tile_box))
+        for name, index in state["layers"].items()
+    }
+    local_exclusions = GeometryIndex(
+        state["exclusions"].intersecting(tile_box)
+    )
+
+    points = load_points(
+        state["pointcloud_entries"],
+        bounds,
+        tile["name"],
+    )
+
+    # Preserve the original forest-footprint approximation. Point rows
+    # contain XYZ, so explicitly select XY before unpacking.
+    if len(points):
         stride = max(1, len(points) // 5000)
         sampled_xy = points[::stride, :2]
-
-        local_layers["forest"] = [
-            unary_union([
-                Point(float(x), float(y)).buffer(12.0)
-                for x, y in sampled_xy
-            ])
-    ]
+        forest_shape = unary_union([
+            Point(float(x), float(y)).buffer(12.0)
+            for x, y in sampled_xy
+        ])
+        forest_shapes = [forest_shape]
+        prepared_forest = prep(forest_shape)
     else:
-        local_layers["forest"] = []
+        forest_shapes = []
+        prepared_forest = None
 
+    local_layers["forest"] = GeometryIndex(forest_shapes)
     placements = []
-    with rasterio.open(tile["dem"]) as dem:
-        for x, y, z in points:
-            point = Point(float(x), float(y))
-            if any(point.intersects(exclusion) for exclusion in local_exclusions):
-                continue
-            ground = sample_dem(dem, float(x), float(y))
-            if ground is None:
-                continue
-            height = float(z - ground)
-            if not CONFIG["pointcloud_height_floor"] <= height <= CONFIG["pointcloud_height_ceiling"]:
-                continue
-            species = "tree_mixed"
-            if forest_points:
-                nearest = min(
-                    range(len(forest_points)),
-                    key=lambda index: forest_points[index].Distance(
-                        ogr.CreateGeometryFromWkt(f"POINT ({x} {y})")
-                    ),
-                )
-                species = tree_species(forest_codes[nearest])
-            placements.append((
-                species, float(x - xmin), float(ymax - y), float(ground),
-                height, 1.0, 0.0, 1.0, 1.0,
-            ))
 
-        rng = stable_rng(CONFIG["placement_seed"], tile["name"])
-        for name, spacing, asset in (
-            ("meadow", CONFIG["grass_spacing"], "grass_meadow"),
-            ("lawn", CONFIG["grass_spacing"], "grass_lawn"),
-            ("cemetery", CONFIG["grass_spacing"], "grass_lawn"),
-            ("wetland", CONFIG["grass_spacing"], "reed_wetland"),
-            ("rock", CONFIG["rock_spacing"], "rock_moss"),
-            ("agriculture", 1.5, "wheat"),
+    with rasterio.open(tile["dem"]) as dataset:
+        if dataset.crs is None or dataset.crs != rasterio.crs.CRS.from_epsg(EPSG):
+            raise ValueError(
+                f"Expected EPSG:3067 DEM for {tile['name']}: {tile['dem']}"
+            )
+        dem = DemSampler(dataset)
+
+    forest_tree = state["forest_tree"]
+    forest_codes = state["forest_codes"]
+
+    # Retain one tree placement per accepted vegetation-class LiDAR return.
+    for x, y, z in points:
+        x = float(x)
+        y = float(y)
+        point = Point(x, y)
+
+        if local_exclusions.intersects_point(point):
+            continue
+
+        ground = dem.sample(x, y)
+        if ground is None:
+            continue
+
+        height = float(z - ground)
+        if not (
+            CONFIG["pointcloud_height_floor"]
+            <= height
+            <= CONFIG["pointcloud_height_ceiling"]
         ):
-            for x in np.arange(xmin, xmax, spacing):
-                for y in np.arange(ymin, ymax, spacing):
-                    point = Point(float(x), float(y))
-                    if not polygon_for_point(point, local_layers, name):
-                        continue
-                    if any(point.intersects(exclusion) for exclusion in local_exclusions):
-                        continue
-                    ground = sample_dem(dem, float(x), float(y))
-                    if ground is None or rng.random() > 0.55:
-                        continue
-                    height = {
-                        "grass_meadow": 0.45,
-                        "grass_lawn": 0.30,
-                        "reed_wetland": 0.9,
-                        "rock_moss": 1.2,
-                        "wheat": 0.75,
-                    }[asset]
-                    placements.append((
-                        asset, float(x - xmin), float(ymax - y),
-                        float(ground), height, float(rng.uniform(0.8, 1.2)),
-                        float(rng.uniform(0, math.tau)), 1.0, 0.5,
-                    ))
+            continue
 
-        for x in np.arange(xmin, xmax, 4.0):
-            for y in np.arange(ymin, ymax, 4.0):
-                point = Point(float(x), float(y))
-                if material_at(point, local_layers) != "exposed":
-                    continue
-                if any(point.intersects(exclusion) for exclusion in local_exclusions):
-                    continue
-                ground = sample_dem(dem, float(x), float(y))
-                if ground is not None and rng.random() < 0.18:
-                    placements.append((
-                        "grass_exposed", float(x - xmin), float(ymax - y),
-                        float(ground), 0.3, float(rng.uniform(0.8, 1.2)),
-                        float(rng.uniform(0, math.tau)), 1.0, 0.2,
-                    ))
+        species = "tree_mixed"
+        if forest_tree is not None:
+            nearest_index = forest_tree.nearest(point)
+            if nearest_index is not None:
+                species = tree_species(forest_codes[int(nearest_index)])
 
+        placements.append((
+            species,
+            x - xmin,
+            ymax - y,
+            ground,
+            height,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+        ))
+
+    # Per-tile seed makes random placements independent of worker scheduling.
+    rng = stable_rng(CONFIG["placement_seed"], tile["name"])
+
+    asset_heights = {
+        "grass_meadow": 0.45,
+        "grass_lawn": 0.30,
+        "reed_wetland": 0.9,
+        "rock_moss": 1.2,
+        "wheat": 0.75,
+    }
+
+    for name, spacing, asset in (
+        ("meadow", CONFIG["grass_spacing"], "grass_meadow"),
+        ("lawn", CONFIG["grass_spacing"], "grass_lawn"),
+        ("cemetery", CONFIG["grass_spacing"], "grass_lawn"),
+        ("wetland", CONFIG["grass_spacing"], "reed_wetland"),
+        ("rock", CONFIG["rock_spacing"], "rock_moss"),
+        ("agriculture", 1.5, "wheat"),
+    ):
+        category = local_layers.get(name)
+
+        # Empty categories never consumed RNG values in the original loop.
+        if category is None or category.tree is None:
+            continue
+
+        for x in np.arange(xmin, xmax, spacing):
+            for y in np.arange(ymin, ymax, spacing):
+                x = float(x)
+                y = float(y)
+                point = Point(x, y)
+
+                if not polygon_for_point(point, local_layers, name):
+                    continue
+                if local_exclusions.intersects_point(point):
+                    continue
+
+                ground = dem.sample(x, y)
+                if ground is None or rng.random() > 0.55:
+                    continue
+
+                placements.append((
+                    asset,
+                    x - xmin,
+                    ymax - y,
+                    ground,
+                    asset_heights[asset],
+                    float(rng.uniform(0.8, 1.2)),
+                    float(rng.uniform(0, math.tau)),
+                    1.0,
+                    0.5,
+                ))
+
+    for x in np.arange(xmin, xmax, 4.0):
+        for y in np.arange(ymin, ymax, 4.0):
+            x = float(x)
+            y = float(y)
+            point = Point(x, y)
+
+            if material_at(point, local_layers) != "exposed":
+                continue
+            if local_exclusions.intersects_point(point):
+                continue
+
+            ground = dem.sample(x, y)
+            if ground is not None and rng.random() < 0.18:
+                placements.append((
+                    "grass_exposed",
+                    x - xmin,
+                    ymax - y,
+                    ground,
+                    0.3,
+                    float(rng.uniform(0.8, 1.2)),
+                    float(rng.uniform(0, math.tau)),
+                    1.0,
+                    0.2,
+                ))
+
+    if prepared_forest is not None:
         for x in np.arange(xmin, xmax, CONFIG["bush_spacing"]):
             for y in np.arange(ymin, ymax, CONFIG["bush_spacing"]):
-                point = Point(float(x), float(y))
-                if not polygon_for_point(point, local_layers, "forest"):
+                x = float(x)
+                y = float(y)
+                point = Point(x, y)
+
+                if not prepared_forest.contains(point):
                     continue
-                if any(point.intersects(exclusion) for exclusion in local_exclusions):
+                if local_exclusions.intersects_point(point):
                     continue
-                ground = sample_dem(dem, float(x), float(y))
+
+                ground = dem.sample(x, y)
                 if ground is not None and rng.random() < 0.35:
                     placements.append((
-                        "bush_leafy", float(x - xmin), float(ymax - y),
-                        float(ground), float(rng.uniform(1.0, 2.5)),
+                        "bush_leafy",
+                        x - xmin,
+                        ymax - y,
+                        ground,
+                        float(rng.uniform(1.0, 2.5)),
                         float(rng.uniform(0.9, 1.2)),
-                        float(rng.uniform(0, math.tau)), 1.0, 0.4,
+                        float(rng.uniform(0, math.tau)),
+                        1.0,
+                        0.4,
                     ))
 
-    placements_path = output / "placements" / f"{tile['name']}.vpl"
+    placements_path = (
+        state["output"] / "placements" / f"{tile['name']}.vpl"
+    )
     atomic_replace(
         placements_path,
         lambda temporary: write_vpl(temporary, bounds, placements),
@@ -724,6 +1120,8 @@ def generate_tile(tile, pointcloud_files, layers, exclusions, forest_points, for
     resolution = CONFIG["grid_resolution"]
     columns = max(1, math.ceil((xmax - xmin) / resolution))
     rows = max(1, math.ceil((ymax - ymin) / resolution))
+
+    # Preserve the original material-grid orientation: row zero is south.
     material_grid = []
     for row in range(rows):
         values = []
@@ -734,24 +1132,83 @@ def generate_tile(tile, pointcloud_files, layers, exclusions, forest_points, for
             )
             values.append(material_at(point, local_layers))
         material_grid.append(values)
-    landcover_path = output / "landcover" / f"{tile['name']}.json"
+
+    landcover_path = (
+        state["output"] / "landcover" / f"{tile['name']}.json"
+    )
     atomic_replace(
         landcover_path,
         lambda temporary: temporary.write_text(
             json.dumps({
-            "tile": tile["name"],
-            "bounds": bounds,
-            "resolution": resolution,
-            "materials": material_grid,
-            "placement_count": len(placements),
+                "tile": tile["name"],
+                "bounds": bounds,
+                "resolution": resolution,
+                "materials": material_grid,
+                "placement_count": len(placements),
             }),
             encoding="utf-8",
         ),
     )
+
     return len(placements)
 
 
+def initialize_landcover_worker(
+    mtk_folder,
+    buildings_path,
+    roads_path,
+    pointcloud_files,
+    output_folder,
+):
+    """Initialize process-local vector indexes and point-cloud metadata.
+
+    Arguments are serializable paths, not open datasets or OGR geometries.
+    The process pool invokes this function once per worker.
+    """
+    global _WORKER_STATE
+
+    check_dependencies()
+    ogr.UseExceptions()
+
+    layers, exclusions, forest_points, forest_codes = load_sources(
+        Path(mtk_folder),
+        buildings_path,
+        roads_path,
+    )
+
+    _WORKER_STATE = {
+        "layers": {
+            name: GeometryIndex(geometries)
+            for name, geometries in layers.items()
+        },
+        "exclusions": GeometryIndex(exclusions),
+        "forest_tree": STRtree(forest_points) if forest_points else None,
+        "forest_codes": forest_codes,
+        "pointcloud_entries": index_pointcloud_files(
+            [Path(path) for path in pointcloud_files]
+        ),
+        "output": Path(output_folder),
+    }
+
+    print(
+        f"Worker {os.getpid()}: source data and indexes loaded.",
+        flush=True,
+    )
+
+
+def generate_tile_in_worker(tile):
+    """Generate one tile and return only its placement count to the parent."""
+    if _WORKER_STATE is None:
+        raise RuntimeError("Land-cover worker has not been initialized")
+
+    return generate_tile(tile, _WORKER_STATE)
+
+
 def main():
+    """Parse arguments, reuse valid outputs, and schedule unfinished tiles."""
+    check_dependencies()
+    default_workers = min(4, os.cpu_count() or 1)
+
     parser = argparse.ArgumentParser(
         description="Generate land-cover maps and vegetation placements.",
     )
@@ -761,34 +1218,63 @@ def main():
     parser.add_argument("--buildings")
     parser.add_argument("--roads")
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=default_workers,
+        help=(
+            "Tile-generation processes. "
+            f"Default: {default_workers}. Use 1 for sequential execution."
+        ),
+    )
+    parser.add_argument(
         "--force-rebuild",
         action="store_true",
-        help="Regenerate every tile instead of resuming completed tiles.",
+        help="Regenerate every tile instead of reusing completed tiles.",
     )
     parser.add_argument("-o", "--output", required=True)
     args = parser.parse_args()
 
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
+    if sys.platform == "win32" and args.workers > 61:
+        parser.error("--workers cannot exceed 61 on Windows")
+
     dem = Path(args.dem).resolve()
     mtk = Path(args.mtk).resolve()
+    pointcloud = Path(args.pointcloud).resolve()
     output = Path(args.output).resolve()
+    buildings = (
+        str(Path(args.buildings).resolve())
+        if args.buildings
+        else None
+    )
+    roads = (
+        str(Path(args.roads).resolve())
+        if args.roads
+        else None
+    )
+
+    for label, folder in (
+        ("DEM", dem),
+        ("MTK", mtk),
+        ("Point-cloud", pointcloud),
+    ):
+        if not folder.is_dir():
+            raise ValueError(f"{label} directory does not exist: {folder}")
+
     output.mkdir(parents=True, exist_ok=True)
     (output / "placements").mkdir(exist_ok=True)
     (output / "landcover").mkdir(exist_ok=True)
 
     tiles = read_terrain_index(dem)
-    pointcloud = Path(args.pointcloud).resolve()
     pointcloud_files = read_pointcloud_files(pointcloud)
-    layers, exclusions, forest_points, forest_codes = load_sources(
-        mtk,
-        args.buildings,
-        args.roads,
-    )
+
     signature = run_signature(
         dem,
         mtk,
         pointcloud,
-        args.buildings,
-        args.roads,
+        buildings,
+        roads,
     )
     manifest_path = output / MANIFEST_NAME
     resume = read_resume_state(
@@ -796,59 +1282,189 @@ def main():
         signature,
         args.force_rebuild,
     )
+
     if resume:
         print(
-            f"Resuming: {len(resume)} completed tiles are available for reuse.",
+            f"Resuming: {len(resume)} completed tile records found.",
             flush=True,
         )
     elif manifest_path.is_file() and not args.force_rebuild:
         print(
-            "Existing manifest does not match the current inputs/config; "
-            "regenerating tiles.",
+            "Existing manifest does not match the current generator/"
+            "inputs/config; regenerating tiles.",
             flush=True,
         )
-    print(f"Processing {len(tiles)} tiles and {len(pointcloud_files)} point-cloud files.", flush=True)
+
+    records = {}
+    pending_tiles = []
     total = 0
-    manifest_tiles = []
-    for index, tile in enumerate(tiles, 1):
+
+    # Preserve every valid reusable tile before writing any checkpoint.
+    for tile in tiles:
         record = resume.get(tile["name"])
+
         if record and reusable_tile(output, tile, record):
-            count = record["placement_count"]
-            print(
-                f"Tile {index}/{len(tiles)}: reusing {count} placements.",
-                flush=True,
-            )
+            records[tile["name"]] = record
+            total += record["placement_count"]
         else:
-            count = generate_tile(
-                tile, pointcloud_files, layers, exclusions,
-                forest_points, forest_codes, output,
-            )
-            print(f"Tile {index}/{len(tiles)}: {count} placements.", flush=True)
-        total += count
-        manifest_tiles.append({
+            pending_tiles.append(tile)
+
+    def checkpoint():
+        """Save all completed records in original terrain-manifest order."""
+        ordered_records = [
+            records[tile["name"]]
+            for tile in tiles
+            if tile["name"] in records
+        ]
+        write_manifest(
+            manifest_path,
+            signature,
+            ordered_records,
+            total,
+        )
+
+    def record_completed_tile(tile, count):
+        """Record and checkpoint one successful tile in the parent process."""
+        nonlocal total
+
+        records[tile["name"]] = {
             "terrain_filename": tile["name"],
             "placement_filename": f"placements/{tile['name']}.vpl",
             "landcover_filename": f"landcover/{tile['name']}.json",
             "placement_count": count,
             "status": "complete",
-        })
-        write_manifest(manifest_path, signature, manifest_tiles, total)
+        }
+        total += count
+        checkpoint()
+
+        print(
+            f"Completed {len(records)}/{len(tiles)} tiles: "
+            f"{tile['name']} — {count} placements.",
+            flush=True,
+        )
+
+    checkpoint()
+
+    print(
+        f"Terrain tiles: {len(tiles)}; "
+        f"reusing: {len(records)}; "
+        f"to generate: {len(pending_tiles)}; "
+        f"point-cloud files: {len(pointcloud_files)}.",
+        flush=True,
+    )
+
+    if not buildings:
+        print(
+            "Building exclusions disabled: --buildings was not supplied.",
+            flush=True,
+        )
+    if not roads:
+        print(
+            "Road exclusions disabled: --roads was not supplied.",
+            flush=True,
+        )
+
+    if not pending_tiles:
+        print(
+            f"Finished: {total} placements in {output}. All tiles reused.",
+            flush=True,
+        )
+        return
+
+    workers = min(args.workers, len(pending_tiles))
+    print(f"Generating with {workers} worker(s).", flush=True)
+
+    initializer_args = (
+        str(mtk),
+        buildings,
+        roads,
+        [str(path) for path in pointcloud_files],
+        str(output),
+    )
+
+    if workers == 1:
+        # Sequential mode retains the same worker initialization and logic.
+        initialize_landcover_worker(*initializer_args)
+
+        for tile in pending_tiles:
+            try:
+                count = generate_tile_in_worker(tile)
+            except Exception:
+                print(
+                    f"\nFAILED tile {tile['name']}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                raise
+
+            record_completed_tile(tile, count)
+
+    else:
+        failed_tiles = []
+        context = multiprocessing.get_context("spawn")
+
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=context,
+            initializer=initialize_landcover_worker,
+            initargs=initializer_args,
+        ) as executor:
+            futures = {
+                executor.submit(generate_tile_in_worker, tile): tile
+                for tile in pending_tiles
+            }
+
+            for future in as_completed(futures):
+                tile = futures[future]
+
+                try:
+                    count = future.result()
+                except Exception as error:
+                    failed_tiles.append(tile["name"])
+                    print(
+                        f"\nFAILED tile {tile['name']}: {error}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    traceback.print_exception(
+                        type(error),
+                        error,
+                        error.__traceback__,
+                        file=sys.stderr,
+                    )
+                    # Collect remaining successes so they can be resumed.
+                    continue
+
+                record_completed_tile(tile, count)
+
+        if failed_tiles:
+            preview = ", ".join(failed_tiles[:10])
+            if len(failed_tiles) > 10:
+                preview += ", ..."
+
+            raise RuntimeError(
+                f"{len(failed_tiles)} tile(s) failed: {preview}. "
+                f"{len(records)}/{len(tiles)} completed tiles were saved. "
+                "Rerun the same command to retry unfinished tiles."
+            )
 
     print(f"Finished: {total} placements in {output}", flush=True)
 
 
 if __name__ == "__main__":
-    import traceback
+    # Required guard for safe Windows process spawning.
+    multiprocessing.freeze_support()
 
     try:
-        # Explicitly choose OGR exception handling instead of relying on
-        # a default that differs between GDAL versions.
         ogr.UseExceptions()
         main()
+    except KeyboardInterrupt:
+        print(
+            "\nInterrupted. Checkpointed tiles can be reused on the next run.",
+            file=sys.stderr,
+        )
+        sys.exit(130)
     except Exception as error:
-        # Preserve a concise error message while also showing the exact
-        # source line and call stack needed to diagnose subsequent failures.
         print(f"\nERROR: {error}", file=sys.stderr)
         traceback.print_exc()
         sys.exit(1)
-
