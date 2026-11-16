@@ -66,6 +66,23 @@ from pathlib import Path
 from PIL import Image
 
 
+# ``generate_landcover.py`` writes semantic categories in each tile map,
+# while ``generate_landcover_textures.py`` writes renderer material IDs.
+# Keep this small export-facing mapping in sync with CONFIG["materials"].
+LANDCOVER_MATERIALS = {
+    "forest": "forest_floor",
+    "wetland": "wetland_dark",
+    "rock": "exposed_rock",
+    "yard": "gravel_yard",
+    "cemetery": "grass",
+    "agriculture": "agriculture",
+    "reed": "grass",
+    "meadow": "meadow",
+    "lawn": "grass",
+    "exposed": "grass",
+}
+
+
 def load_json(path):
     """Load a UTF-8 JSON file with a path-specific error."""
     try:
@@ -75,7 +92,7 @@ def load_json(path):
 
 
 def validate_material_textures(source, textures):
-    """Check that generated material IDs cover the land-cover map IDs."""
+    """Check generated material IDs cover semantic land-cover map values."""
     manifest_path = textures / "terrain_materials.json"
     if not manifest_path.is_file():
         raise ValueError(
@@ -90,19 +107,44 @@ def validate_material_textures(source, textures):
     }
 
     missing = set()
+    required = set()
     for path in sorted((source / "landcover").glob("*.json")):
         data = load_json(path)
         for row in data.get("materials", []):
-            missing.update(
-                material
-                for material in row
-                if material not in available
-            )
+            for category in row:
+                if category in available:
+                    required.add(category)
+                    continue
+                if category not in LANDCOVER_MATERIALS:
+                    raise ValueError(
+                        f"Unknown land-cover category {category!r} in {path}"
+                    )
+                required.add(LANDCOVER_MATERIALS[category])
+
+    missing.update(required - available)
 
     if missing:
         raise ValueError(
-            "Generated terrain textures do not define land-cover material IDs: "
+            "Generated terrain textures do not define material IDs required "
+            "by land-cover maps: "
             + ", ".join(sorted(missing))
+        )
+
+    texture_files = {
+        item["id"]: item.get("texture")
+        for item in manifest.get("materials", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    missing_files = sorted(
+        material
+        for material in required
+        if not texture_files.get(material)
+        or not (textures / texture_files[material]).is_file()
+    )
+    if missing_files:
+        raise ValueError(
+            "Generated terrain material files are missing: "
+            + ", ".join(missing_files)
         )
 
 
