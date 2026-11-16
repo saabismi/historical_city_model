@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -26,8 +27,8 @@ using namespace std;
 // Existing terrain location:
 const string tilesLocation = "espoo2008_terrain_quick";
 
-// Existing vegetation location: unchanged.
-const string vegetationLocation = "espoo2008_veg_packed_new";
+// Generated land-cover package containing vegetation and ground materials.
+const string vegetationLocation = "espoo2008_landcover_viewer";
 
 // NEW: folder containing building_index.txt, building_materials.txt,
 // textures/, and tiles/. Change this name to match your actual output folder.
@@ -35,6 +36,7 @@ const string buildingsLocation = "espoo2008_buildings_all";
 
 // Location of the generated roads (includes textures)
 const string roadsLocation = "espoo2008_roads";
+const string groundLocation = "espoo2008_landcover_viewer";
 
 const double PI = 3.14159265358979323846;
 
@@ -90,11 +92,38 @@ struct Vertex {
 struct Mesh {
     std::vector<Vertex> vertices;
     std::vector<unsigned int> indices;
+    std::vector<unsigned int> triangleCells;
+
+    struct MaterialGroup {
+        unsigned int material;
+        std::vector<unsigned int> indices;
+    };
+    std::vector<MaterialGroup> materialGroups;
+    std::vector<unsigned int> untexturedIndices;
 
     size_t bytes() const {
-        return vertices.capacity() * sizeof(Vertex)
-             + indices.capacity() * sizeof(unsigned int);
+        size_t total = vertices.capacity() * sizeof(Vertex)
+            + indices.capacity() * sizeof(unsigned int)
+            + triangleCells.capacity() * sizeof(unsigned int);
+        total += untexturedIndices.capacity() * sizeof(unsigned int);
+        for (size_t i = 0; i < materialGroups.size(); ++i)
+            total += sizeof(MaterialGroup)
+                + materialGroups[i].indices.capacity()
+                    * sizeof(unsigned int);
+        return total;
     }
+};
+
+struct GroundData {
+    unsigned int columns;
+    unsigned int rows;
+    float resolution;
+    std::vector<unsigned short> materials;
+};
+
+struct GroundMaterial {
+    std::string id;
+    GLuint texture;
 };
 
 // Each terrain tile may have vegetation and buildings, or neither.
@@ -107,7 +136,9 @@ struct Tile {
     std::string buildingFilename;
 
     std::string roadFilename;
+    std::string groundFilename;
     roads::Data* roadsData;
+    GroundData* groundData;
 
 
     vegetation::Data* plants;
@@ -127,6 +158,7 @@ struct Tile {
         : plants(0),
           structures(0),
           roadsData(0),
+          groundData(0),
           mesh(0),
           loadedLOD(-1),
           wantedLOD(-1),
@@ -146,7 +178,12 @@ struct Result {
     vegetation::Data* plants;
     buildings::Data* structures;
     roads::Data* roadsData;
+    GroundData* groundData;
 };
+
+std::vector<GroundMaterial> groundMaterials;
+std::map<std::string, std::string> groundFiles;
+bool groundEnabled = false;
 
 // Window and OpenGL objects.
 HWND windowHandle = 0;
@@ -272,6 +309,218 @@ bool readBytes(std::ifstream& file, void* data, size_t bytes) {
 
 bool readUInt(std::ifstream& file, unsigned int& value) {
     return readBytes(file, &value, 4);
+}
+
+std::string terrainKey(const std::string& filename) {
+    std::string result = filename;
+    std::string::size_type separator = result.find_last_of("\\/");
+    if (separator != std::string::npos)
+        result = result.substr(separator + 1);
+    for (size_t i = 0; i < result.size(); ++i) {
+        if (result[i] >= 'A' && result[i] <= 'Z')
+            result[i] = (char)(result[i] - 'A' + 'a');
+    }
+    return result;
+}
+
+GLuint loadGroundTexture(const std::string& filename) {
+    std::ifstream file(filename.c_str(), std::ios::binary);
+    if (!file) return 0;
+
+    unsigned char header[18];
+    if (!readBytes(file, header, sizeof(header)))
+        return 0;
+
+    unsigned int width = header[12] | (header[13] << 8);
+    unsigned int height = header[14] | (header[15] << 8);
+    if (header[0] != 0 || header[1] != 0 || header[2] != 2
+        || header[16] != 32 || header[17] != 8
+        || width == 0 || height == 0 || width > 2048 || height > 2048)
+        return 0;
+
+    std::vector<unsigned char> pixels(
+        (size_t)width * height * 4
+    );
+    if (!readBytes(file, &pixels[0], pixels.size()))
+        return 0;
+
+    for (size_t i = 0; i < pixels.size(); i += 4)
+        std::swap(pixels[i], pixels[i + 2]);
+
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    if (!texture) return 0;
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexImage2D(
+        GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
+        GL_RGBA, GL_UNSIGNED_BYTE, &pixels[0]
+    );
+    return texture;
+}
+
+bool initializeGroundMaterials(const std::string& folder) {
+    std::ifstream file((folder + "\\ground_materials.txt").c_str());
+    if (!file) return false;
+
+    std::string line;
+    std::getline(file, line);
+    if (!line.empty() && line[line.size() - 1] == '\r')
+        line.erase(line.size() - 1);
+    if (line != "GROUND_MATERIALS_V1")
+        return false;
+
+    unsigned int count = 0;
+    if (!(file >> count) || count == 0 || count > 256)
+        return false;
+    std::getline(file, line);
+
+    for (unsigned int i = 0; i < count; ++i) {
+        GroundMaterial material;
+        std::string relative;
+        if (!(file >> material.id >> relative))
+            return false;
+        material.texture = loadGroundTexture(
+            folder + "\\" + relative
+        );
+        if (!material.texture)
+            return false;
+        groundMaterials.push_back(material);
+    }
+    return true;
+}
+
+bool initializeGroundIndex(const std::string& folder) {
+    std::ifstream file((folder + "\\ground_index.txt").c_str());
+    if (!file) return false;
+    std::string magic;
+    std::getline(file, magic);
+    if (!magic.empty() && magic[magic.size() - 1] == '\r')
+        magic.erase(magic.size() - 1);
+    if (magic != "GROUND_INDEX_V1")
+        return false;
+
+    unsigned int count = 0;
+    if (!(file >> count) || count > 100000)
+        return false;
+    for (unsigned int i = 0; i < count; ++i) {
+        std::string terrain;
+        std::string relative;
+        if (!(file >> terrain >> relative))
+            return false;
+        groundFiles[terrainKey(terrain)] = folder + "\\" + relative;
+    }
+
+    return true;
+}
+
+void shutdownGround() {
+    for (size_t i = 0; i < groundMaterials.size(); ++i) {
+        if (groundMaterials[i].texture)
+            glDeleteTextures(1, &groundMaterials[i].texture);
+    }
+    groundMaterials.clear();
+    groundFiles.clear();
+    groundEnabled = false;
+}
+
+GroundData* loadGround(const std::string& filename) {
+    if (filename.empty()) return 0;
+    std::ifstream file(filename.c_str(), std::ios::binary);
+    if (!file) return 0;
+    char magic[4];
+    unsigned int columns, rows;
+    float resolution;
+    if (!readBytes(file, magic, 4)
+        || std::string(magic, 4) != "LCM1"
+        || !readUInt(file, columns)
+        || !readUInt(file, rows)
+        || !readBytes(file, &resolution, sizeof(resolution))
+        || columns == 0 || rows == 0
+        || columns > 4096 || rows > 4096
+        || resolution <= 0)
+        return 0;
+
+    GroundData* data = new GroundData;
+    data->columns = columns;
+    data->rows = rows;
+    data->resolution = resolution;
+    data->materials.resize((size_t)columns * rows);
+    if (!readBytes(
+        file, &data->materials[0],
+        data->materials.size() * sizeof(unsigned short)
+    )) {
+        delete data;
+        return 0;
+    }
+    return data;
+}
+
+void buildGroundGroups(
+    Mesh* mesh,
+    GroundData* ground,
+    const Tile& tile
+) {
+    if (!mesh || !ground || mesh->triangleCells.empty())
+        return;
+
+    std::map<unsigned int, size_t> groups;
+    size_t triangleCount = mesh->triangleCells.size();
+    for (size_t triangle = 0; triangle < triangleCount; ++triangle) {
+        unsigned int first = (unsigned int)(triangle * 3);
+        if (first + 2 >= mesh->indices.size())
+            continue;
+        unsigned int a = mesh->indices[first];
+        unsigned int b = mesh->indices[first + 1];
+        unsigned int c = mesh->indices[first + 2];
+        double x = (
+            mesh->vertices[a].x
+            + mesh->vertices[b].x
+            + mesh->vertices[c].x
+        ) / 3.0;
+        double south = (
+            mesh->vertices[a].z
+            + mesh->vertices[b].z
+            + mesh->vertices[c].z
+        ) / 3.0;
+        double worldY = tile.ymax - south;
+        int column = (int)std::floor(
+            x / ground->resolution
+        );
+        int row = (int)std::floor(
+            (worldY - tile.ymin) / ground->resolution
+        );
+        if (column < 0 || row < 0
+            || column >= (int)ground->columns
+            || row >= (int)ground->rows) {
+            mesh->untexturedIndices.push_back(a);
+            mesh->untexturedIndices.push_back(b);
+            mesh->untexturedIndices.push_back(c);
+            continue;
+        }
+        unsigned int material =
+            ground->materials[(size_t)row * ground->columns + column];
+        std::map<unsigned int, size_t>::iterator found =
+            groups.find(material);
+        size_t groupIndex;
+        if (found == groups.end()) {
+            groupIndex = mesh->materialGroups.size();
+            groups[material] = groupIndex;
+            Mesh::MaterialGroup group;
+            group.material = material;
+            mesh->materialGroups.push_back(group);
+        } else {
+            groupIndex = found->second;
+        }
+        Mesh::MaterialGroup& group = mesh->materialGroups[groupIndex];
+        group.indices.push_back(a);
+        group.indices.push_back(b);
+        group.indices.push_back(c);
+    }
 }
 
 // Read one selected terrain LOD on the background thread.
@@ -476,6 +725,9 @@ Mesh* loadTerrain(const std::string& filename, int requestedLOD) {
                                 candidates[triangle * 3 + k]
                             );
                         }
+                        mesh->triangleCells.push_back(
+                            r * (columns - 1) + c
+                        );
                     }
                 }
             }
@@ -583,6 +835,7 @@ DWORD WINAPI loaderMain(void*) {
         vegetation::Data* plants = 0;
         buildings::Data* structures = 0;
         roads::Data* roadsData = 0;
+        GroundData* groundData = 0;
 
         if (mesh && !loaderShouldStop()) {
             plants = vegetation::load(
@@ -604,11 +857,18 @@ DWORD WINAPI loaderMain(void*) {
                 loaderShouldStop
             );
         }
+        if (mesh && !loaderShouldStop()) {
+            groundData = loadGround(
+                tiles[request.tile].groundFilename
+            );
+        }
 
         if (loaderShouldStop()) {
             delete mesh;
             delete plants;
             delete structures;
+            delete roadsData;
+            delete groundData;
             break;
         }
 
@@ -619,6 +879,7 @@ DWORD WINAPI loaderMain(void*) {
         result.plants = plants;
         result.structures = structures;
         result.roadsData = roadsData;
+        result.groundData = groundData;
 
 
         EnterCriticalSection(&loaderLock);
@@ -652,6 +913,7 @@ double tileDistance(const Tile& tile) {
 // considered ready when no file was indexed for that terrain tile.
 bool tileReady(const Tile& tile) {
     return tile.mesh
+        && (!groundEnabled || tile.groundFilename.empty() || tile.groundData)
         && (tile.vegetationFilename.empty() || tile.plants)
         && (tile.buildingFilename.empty() || tile.structures)
         && (tile.roadFilename.empty() || tile.roadsData);
@@ -673,6 +935,10 @@ size_t cacheBytes() {
 
         if (tiles[i].roadsData)
             bytes += tiles[i].roadsData->bytes();
+        if (tiles[i].groundData)
+            bytes += sizeof(GroundData)
+                + tiles[i].groundData->materials.capacity()
+                    * sizeof(unsigned short);
     }
 
     return bytes;
@@ -696,6 +962,7 @@ void updateStreaming() {
             delete result.plants;
             delete result.structures;
             delete result.roadsData;
+            delete result.groundData;
 
             tile.failed = true;
             continue;
@@ -705,6 +972,8 @@ void updateStreaming() {
             delete result.mesh;
             delete result.plants;
             delete result.structures;
+            delete result.roadsData;
+            delete result.groundData;
             continue;
         }
 
@@ -712,11 +981,14 @@ void updateStreaming() {
         delete tile.plants;
         delete tile.structures;
         delete tile.roadsData;
+        delete tile.groundData;
 
         tile.mesh = result.mesh;
         tile.plants = result.plants;
         tile.structures = result.structures;
         tile.roadsData = result.roadsData;
+        tile.groundData = result.groundData;
+        buildGroundGroups(tile.mesh, tile.groundData, tile);
         tile.loadedLOD = result.lod;
     }
 
@@ -729,11 +1001,13 @@ void updateStreaming() {
             delete tile.plants;
             delete tile.structures;
             delete tile.roadsData;
+            delete tile.groundData;
 
             tile.mesh = 0;
             tile.plants = 0;
             tile.structures = 0;
             tile.roadsData = 0;
+            tile.groundData = 0;
             tile.loadedLOD = -1;
         }
     }
@@ -749,7 +1023,8 @@ void updateStreaming() {
             if (tiles[i].mesh
                 || tiles[i].plants
                 || tiles[i].structures
-                || tiles[i].roadsData) {
+                || tiles[i].roadsData
+                || tiles[i].groundData) {
                 double distance = tileDistance(tiles[i]);
 
                 if (distance > farthestDistance) {
@@ -775,16 +1050,22 @@ void updateStreaming() {
 
         if (tile.roadsData)
             bytes -= tile.roadsData->bytes();
+        if (tile.groundData)
+            bytes -= sizeof(GroundData)
+                + tile.groundData->materials.capacity()
+                    * sizeof(unsigned short);
 
         delete tile.mesh;
         delete tile.plants;
         delete tile.structures;
         delete tile.roadsData;
+        delete tile.groundData;
 
         tile.mesh = 0;
         tile.plants = 0;
         tile.structures = 0;
         tile.roadsData = 0;
+        tile.groundData = 0;
         tile.loadedLOD = -1;
     }
 
@@ -817,6 +1098,11 @@ void updateStreaming() {
             || (
                 !tile.roadFilename.empty()
                 && !tile.roadsData
+            )
+            || (
+                groundEnabled
+                && !tile.groundFilename.empty()
+                && !tile.groundData
             );
 
         if (distance <= loadRadius
@@ -1244,6 +1530,14 @@ void drawOverlay() {
     );
     text(12, 150, vegetationStatus);
 
+    char groundStatus[128];
+    std::sprintf(
+        groundStatus,
+        "Ground textures: %s",
+        groundEnabled ? "on" : "off"
+    );
+    text(12, 170, groundStatus);
+
     char buildingStatus[192];
 
     std::sprintf(
@@ -1447,12 +1741,63 @@ void render() {
             &mesh.vertices[0].nx
         );
 
-        glDrawElements(
-            GL_TRIANGLES,
-            (GLsizei)mesh.indices.size(),
-            GL_UNSIGNED_INT,
-            &mesh.indices[0]
-        );
+        if (groundEnabled && !mesh.materialGroups.empty()) {
+            glColor3f(1.0f, 1.0f, 1.0f);
+            glEnable(GL_TEXTURE_2D);
+            glEnable(GL_TEXTURE_GEN_S);
+            glEnable(GL_TEXTURE_GEN_T);
+            glTexGeni(GL_S, GL_TEXTURE_GEN_MODE, GL_OBJECT_LINEAR);
+            glTexGeni(GL_T, GL_TEXTURE_GEN_MODE, GL_OBJECT_LINEAR);
+            GLfloat sPlane[] = { 0.05f, 0.0f, 0.0f, 0.0f };
+            GLfloat tPlane[] = { 0.0f, 0.0f, 0.05f, 0.0f };
+            glTexGenfv(GL_S, GL_OBJECT_PLANE, sPlane);
+            glTexGenfv(GL_T, GL_OBJECT_PLANE, tPlane);
+            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+
+            for (size_t group = 0;
+                 group < mesh.materialGroups.size();
+                 ++group) {
+                unsigned int material =
+                    mesh.materialGroups[group].material;
+                if (material >= groundMaterials.size())
+                    continue;
+                glBindTexture(
+                    GL_TEXTURE_2D,
+                    groundMaterials[material].texture
+                );
+                const std::vector<unsigned int>& indices =
+                    mesh.materialGroups[group].indices;
+                if (!indices.empty()) {
+                    glDrawElements(
+                        GL_TRIANGLES,
+                        (GLsizei)indices.size(),
+                        GL_UNSIGNED_INT,
+                        &indices[0]
+                    );
+                }
+            }
+            if (!mesh.untexturedIndices.empty()) {
+                glDisable(GL_TEXTURE_2D);
+                glColor3f(0.65f, 0.67f, 0.61f);
+                glDrawElements(
+                    GL_TRIANGLES,
+                    (GLsizei)mesh.untexturedIndices.size(),
+                    GL_UNSIGNED_INT,
+                    &mesh.untexturedIndices[0]
+                );
+            }
+            glDisable(GL_TEXTURE_GEN_S);
+            glDisable(GL_TEXTURE_GEN_T);
+            glDisable(GL_TEXTURE_2D);
+            glColor3f(0.65f, 0.67f, 0.61f);
+        } else {
+            glDrawElements(
+                GL_TRIANGLES,
+                (GLsizei)mesh.indices.size(),
+                GL_UNSIGNED_INT,
+                &mesh.indices[0]
+            );
+        }
 
         glPopMatrix();
 
@@ -2146,6 +2491,27 @@ int WINAPI WinMain(
         );
     }
 
+    if (initializeGroundMaterials(groundLocation)
+        && initializeGroundIndex(groundLocation)) {
+        groundEnabled = true;
+    } else {
+        shutdownGround();
+        MessageBoxA(
+            windowHandle,
+            "Ground material package was not found or is invalid.\n"
+            "Terrain will render with the legacy untextured mode.",
+            "Ground materials",
+            MB_OK | MB_ICONWARNING
+        );
+    }
+
+    for (size_t i = 0; i < tiles.size(); ++i) {
+        std::map<std::string, std::string>::const_iterator found =
+            groundFiles.find(terrainKey(tiles[i].filename));
+        if (found != groundFiles.end())
+            tiles[i].groundFilename = found->second;
+    }
+
     applyViewerSettings();
 
 
@@ -2202,6 +2568,7 @@ int WINAPI WinMain(
 
         buildings::shutdown();
         vegetation::shutdown();
+        shutdownGround();
 
         if (fontBase)
             glDeleteLists(fontBase, 256);
@@ -2317,6 +2684,7 @@ int WINAPI WinMain(
         delete results[i].plants;
         delete results[i].structures;
         delete results[i].roadsData;
+        delete results[i].groundData;
 
     }
 
@@ -2326,6 +2694,7 @@ int WINAPI WinMain(
         delete tiles[i].plants;
         delete tiles[i].structures;
         delete tiles[i].roadsData;
+        delete tiles[i].groundData;
 
     }
 
@@ -2337,6 +2706,7 @@ int WINAPI WinMain(
 
     vegetation::shutdown();
     buildings::shutdown();
+    shutdownGround();
 
     wglMakeCurrent(0, 0);
     wglDeleteContext(renderingContext);

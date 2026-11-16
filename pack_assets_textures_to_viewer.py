@@ -161,6 +161,33 @@ def write_tga(image, destination):
         handle.write(pixels.tobytes("raw", "BGRA"))
 
 
+def write_ground_map(path, data, material_ids):
+    """Write compact LCM1 material cells for the legacy terrain renderer."""
+    materials = data.get("materials")
+    if not materials or not isinstance(materials, list):
+        raise ValueError(f"Land-cover map has no materials: {path}")
+    rows = len(materials)
+    columns = len(materials[0])
+    if columns == 0 or any(len(row) != columns for row in materials):
+        raise ValueError(f"Land-cover map rows have inconsistent widths: {path}")
+    resolution = float(data.get("resolution", 0))
+    if resolution <= 0:
+        raise ValueError(f"Invalid land-cover resolution: {path}")
+    values = []
+    for row in materials:
+        for category in row:
+            category = LANDCOVER_MATERIALS.get(category, category)
+            if category not in material_ids:
+                raise ValueError(
+                    f"Material {category!r} is not in the texture manifest: {path}"
+                )
+            values.append(material_ids[category])
+    with path.open("wb") as handle:
+        handle.write(b"LCM1")
+        handle.write(struct.pack("<IIf", columns, rows, resolution))
+        handle.write(struct.pack(f"<{len(values)}H", *values))
+
+
 def read_vpl(path, asset_info):
     """Convert physical VPL1 placements to viewer-relative VEG1 scales."""
     with path.open("rb") as handle:
@@ -361,6 +388,30 @@ def main():
     else:
         validate_material_textures(source, textures)
 
+    material_ids = {}
+    if textures.is_dir():
+        texture_manifest = load_json(textures / "terrain_materials.json")
+        material_ids = {
+            item["id"]: index
+            for index, item in enumerate(texture_manifest.get("materials", []))
+            if isinstance(item, dict) and item.get("id")
+        }
+        texture_records = []
+        for item in texture_manifest.get("materials", []):
+            material_id = item["id"]
+            source_texture = textures / item["texture"]
+            output_texture = output / "textures" / f"ground_{material_id}.tga"
+            with Image.open(source_texture) as image:
+                write_tga(image, output_texture)
+            texture_records.append((material_id, f"textures/{output_texture.name}"))
+
+        with (output / "ground_materials.txt").open(
+            "w", encoding="utf-8", newline="\n"
+        ) as handle:
+            handle.write(f"GROUND_MATERIALS_V1\n{len(texture_records)}\n")
+            for material_id, relative in texture_records:
+                handle.write(f"{material_id} {relative}\n")
+
     tile_records = []
     print(
         f"Packing {len(manifest['tiles'])} placement/land-cover tiles...",
@@ -384,11 +435,29 @@ def main():
             source / tile["landcover_filename"],
             output / "landcover" / Path(tile["landcover_filename"]).name,
         )
+        if material_ids:
+            landcover_data = load_json(source / tile["landcover_filename"])
+            ground_name = Path(tile["terrain_filename"]).stem + ".lcm"
+            write_ground_map(
+                output / "landcover" / ground_name,
+                landcover_data,
+                material_ids,
+            )
 
     with (output / "vegetation_index.txt").open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(f"VEGETATION_INDEX_V1\n{len(tile_records)}\n")
         for terrain_name, vegetation_name in tile_records:
             handle.write(terrain_name + "\n" + vegetation_name + "\n")
+
+    if material_ids:
+        with (output / "ground_index.txt").open(
+            "w", encoding="utf-8", newline="\n"
+        ) as handle:
+            handle.write(f"GROUND_INDEX_V1\n{len(tile_records)}\n")
+            for terrain_name, _ in tile_records:
+                ground_name = Path(terrain_name).stem + ".lcm"
+                handle.write(terrain_name + "\n")
+                handle.write(f"landcover/{ground_name}\n")
 
     shutil.copy2(
         source / "landcover_manifest.json",
