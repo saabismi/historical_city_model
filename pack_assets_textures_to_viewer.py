@@ -25,6 +25,9 @@ tile names are normalized to the prepared terrain files (for example,
 ``tile_0001.trn``), even when the land-cover manifest stores only the stem.
 Pass the prepared terrain folder with ``--terrain`` so tiles are matched by
 geographic bounds when terrain preparation renamed source DEM tiles.
+Land-cover tiles with no matching prepared terrain tile are skipped with a
+warning; this is expected for source tiles omitted by terrain preparation
+because they contain only water or no valid terrain cells.
 
 With --deform-terrain, this final stage also creates a separate deformed
 terrain folder from existing TRN1 terrain and ROAD1 road tiles. The original
@@ -238,6 +241,8 @@ def match_viewer_terrain(tile_bounds, terrain_tiles):
         if all(abs(left - right) <= tolerance
                for left, right in zip(values, bounds))
     ]
+    if not matches:
+        return None
     if len(matches) != 1:
         raise ValueError(
             "Could not uniquely match land-cover bounds "
@@ -496,12 +501,6 @@ def main():
             f"converting placements and copying land-cover map",
             flush=True,
         )
-        input_path = source / tile["placement_filename"]
-        output_name = input_path.with_suffix(".veg").name
-        write_veg(
-            output / "vegetation" / output_name,
-            read_vpl(input_path, asset_info),
-        )
         landcover_data = load_json(source / tile["landcover_filename"])
         if terrain_tiles is None:
             terrain_name = viewer_terrain_name(tile["terrain_filename"])
@@ -510,6 +509,20 @@ def main():
                 landcover_data.get("bounds"),
                 terrain_tiles,
             )
+            if terrain_name is None:
+                print(
+                    f"  Skipping {tile['terrain_filename']}: no prepared "
+                    "terrain tile has matching bounds (likely water-only).",
+                    flush=True,
+                )
+                continue
+
+        input_path = source / tile["placement_filename"]
+        output_name = input_path.with_suffix(".veg").name
+        write_veg(
+            output / "vegetation" / output_name,
+            read_vpl(input_path, asset_info),
+        )
         tile_records.append((terrain_name, f"vegetation/{output_name}"))
         shutil.copy2(
             source / tile["landcover_filename"],
