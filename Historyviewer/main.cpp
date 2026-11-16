@@ -36,6 +36,8 @@ const string buildingsLocation = "espoo2008_buildings_all";
 
 // Location of the generated roads (includes textures)
 const string roadsLocation = "espoo2008_roads";
+
+// Location of the terrain/landcover texture
 const string groundLocation = "espoo2008_landcover_viewer";
 
 const double PI = 3.14159265358979323846;
