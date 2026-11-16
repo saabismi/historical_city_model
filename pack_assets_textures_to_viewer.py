@@ -2,14 +2,57 @@
 """
 Pack land-cover placements and generated assets for the legacy viewer.
 
-This is the viewer-specific final stage. It converts VPL1 placement tiles to
-the existing VEG1 tile format, writes the V4 billboard texture table, and
-copies the land-cover material maps so a future terrain renderer can consume
-them without rerunning placement generation.
+This is the viewer-specific final stage of the prototype pipeline:
+
+1. ``generate_landcover.py`` writes renderer-neutral VPL1 placements and
+   per-tile land-cover material maps.
+2. ``generate_landcover_assets.py`` writes ``vegetation.json`` and the
+   procedural PNG billboard library.
+3. ``generate_landcover_textures.py`` writes terrain-material PNGs and
+   ``terrain_materials.json``.
+4. This script converts the placements and PNG billboards to the legacy
+   Historyviewer formats.
+
+The output contains the files required by Historyviewer:
+``assets.txt``, twelve TGA textures per asset, ``vegetation_index.txt``, and
+one VEG1 file per terrain tile. Land-cover JSON maps and generated terrain
+textures are copied alongside those files for inspection and for future
+terrain-material rendering.
+
+The current legacy viewer consumes the packed vegetation assets and VEG1
+placements. It does not yet read ``landcover/*.json`` or
+``terrain_textures/*.png``; those files are still exported so terrain
+material rendering can be added without regenerating land-cover placements.
 
 With --deform-terrain, this final stage also creates a separate deformed
 terrain folder from existing TRN1 terrain and ROAD1 road tiles. The original
 terrain is never modified.
+
+Example (Windows cmd.exe):
+    python generate_landcover.py ^
+        --dem espoo2008_dem_tiled ^
+        --mtk MTK_2009_clipped ^
+        --pointcloud espoo1965_clouds ^
+        --buildings MTK_2009_clipped/mtk-rakennus_2009_clipped.gpkg ^
+        --roads MTK_2009_clipped/mtk-tie_2009_clipped.gpkg ^
+        --workers 4 ^
+        -o espoo2008_landcover_output
+
+    python generate_landcover_assets.py ^
+        --output-dir espoo2008_assets
+
+    python generate_landcover_textures.py ^
+        --output-dir espoo2008_textures
+
+    python pack_assets_textures_to_viewer.py ^
+        --input espoo2008_landcover_output ^
+        --assets espoo2008_assets ^
+        --textures espoo2008_textures ^
+        --output Historyviewer/2008_landcover_viewer
+
+The resulting viewer folder must be supplied through the existing
+Historyviewer vegetation-assets setting. Its terrain and building/road
+folders remain the normal prepared viewer data folders.
 """
 
 import argparse
@@ -21,6 +64,46 @@ import sys
 from pathlib import Path
 
 from PIL import Image
+
+
+def load_json(path):
+    """Load a UTF-8 JSON file with a path-specific error."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Cannot read JSON file {path}: {error}") from error
+
+
+def validate_material_textures(source, textures):
+    """Check that generated material IDs cover the land-cover map IDs."""
+    manifest_path = textures / "terrain_materials.json"
+    if not manifest_path.is_file():
+        raise ValueError(
+            f"Missing generated terrain material manifest: {manifest_path}"
+        )
+
+    manifest = load_json(manifest_path)
+    available = {
+        item["id"]
+        for item in manifest.get("materials", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+
+    missing = set()
+    for path in sorted((source / "landcover").glob("*.json")):
+        data = load_json(path)
+        for row in data.get("materials", []):
+            missing.update(
+                material
+                for material in row
+                if material not in available
+            )
+
+    if missing:
+        raise ValueError(
+            "Generated terrain textures do not define land-cover material IDs: "
+            + ", ".join(sorted(missing))
+        )
 
 
 def write_tga(image, destination):
@@ -83,11 +166,47 @@ def write_veg(path, placement):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Pack land-cover assets for Historyviewer.")
-    parser.add_argument("-i", "--input", required=True)
-    parser.add_argument("--assets", required=True)
-    parser.add_argument("-o", "--output", required=True)
-    parser.add_argument("--texture-size", type=int, default=256)
+    parser = argparse.ArgumentParser(
+        description=(
+            "Convert land-cover VPL1 placements and generated billboard "
+            "assets into Historyviewer VEG1/V4 files."
+        ),
+        epilog=(
+            "The legacy viewer renders the packed vegetation. Use --textures "
+            "to copy and validate terrain materials; the current viewer does "
+            "not render those PNGs yet."
+        ),
+    )
+    parser.add_argument(
+        "-i",
+        "--input",
+        required=True,
+        help="generate_landcover.py output directory.",
+    )
+    parser.add_argument(
+        "--assets",
+        required=True,
+        help="generate_landcover_assets.py output directory.",
+    )
+    parser.add_argument(
+        "--textures",
+        help=(
+            "generate_landcover_textures.py output directory. If omitted, "
+            "input/terrain_textures is used when present."
+        ),
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        required=True,
+        help="Empty directory to create for Historyviewer.",
+    )
+    parser.add_argument(
+        "--texture-size",
+        type=int,
+        default=256,
+        help="Near-LOD TGA size; medium/far use half/quarter size.",
+    )
     parser.add_argument(
         "--deform-terrain",
         action="store_true",
@@ -108,7 +227,23 @@ def main():
 
     source = Path(args.input).resolve()
     assets = Path(args.assets).resolve()
+    textures = (
+        Path(args.textures).resolve()
+        if args.textures
+        else source / "terrain_textures"
+    )
     output = Path(args.output).resolve()
+    for label, path in (
+        ("land-cover input", source),
+        ("asset input", assets),
+    ):
+        if not path.is_dir():
+            parser.error(f"{label} directory does not exist: {path}")
+    if args.textures and not textures.is_dir():
+        parser.error(f"Texture directory does not exist: {textures}")
+    if args.texture_size < 64 or args.texture_size % 4:
+        parser.error("--texture-size must be at least 64 and divisible by 4.")
+
     if output.exists() and any(output.iterdir()):
         parser.error("Output must be empty or not yet exist.")
     output.mkdir(parents=True, exist_ok=True)
@@ -118,7 +253,9 @@ def main():
 
     # The appearance library is independent of placement generation. This
     # lets billboard art change without recomputing point-cloud placement.
-    library = json.loads((assets / "vegetation.json").read_text(encoding="utf-8"))
+    library = load_json(assets / "vegetation.json")
+    if library.get("format") != "landcover_assets_v1":
+        parser.error("Unsupported vegetation asset manifest format.")
     asset_info = {}
     records = []
     print(
@@ -127,7 +264,7 @@ def main():
     )
     for asset_id, item in enumerate(library["assets"]):
         definition_path = assets / item["definition"]
-        definition = json.loads(definition_path.read_text(encoding="utf-8"))
+        definition = load_json(definition_path)
         print(
             f"Asset {asset_id + 1}/{len(library['assets'])}: "
             f"{definition['id']} -> TGA textures",
@@ -170,7 +307,18 @@ def main():
             handle.write(f"{asset_id} {width:.9f} {height:.9f} {pu:.9f} {pv:.9f}\n")
             handle.write("\n".join(paths) + "\n")
 
-    manifest = json.loads((source / "landcover_manifest.json").read_text(encoding="utf-8"))
+    manifest = load_json(source / "landcover_manifest.json")
+    if manifest.get("placement_format") != "VPL1":
+        parser.error("Unsupported land-cover placement format.")
+    if not textures.is_dir():
+        print(
+            "No terrain texture directory supplied; vegetation will still "
+            "be packaged.",
+            flush=True,
+        )
+    else:
+        validate_material_textures(source, textures)
+
     tile_records = []
     print(
         f"Packing {len(manifest['tiles'])} placement/land-cover tiles...",
@@ -200,8 +348,11 @@ def main():
         for terrain_name, vegetation_name in tile_records:
             handle.write(terrain_name + "\n" + vegetation_name + "\n")
 
-    shutil.copy2(source / "landcover_manifest.json", output / "landcover_manifest.json")
-    textures_source = source / "terrain_textures"
+    shutil.copy2(
+        source / "landcover_manifest.json",
+        output / "landcover_manifest.json",
+    )
+    textures_source = textures
     if textures_source.is_dir():
         shutil.copytree(
             textures_source,
