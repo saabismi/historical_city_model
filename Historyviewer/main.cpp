@@ -322,6 +322,9 @@ std::string terrainKey(const std::string& filename) {
         if (result[i] >= 'A' && result[i] <= 'Z')
             result[i] = (char)(result[i] - 'A' + 'a');
     }
+    std::string::size_type dot = result.find_last_of('.');
+    if (dot != std::string::npos)
+        result.erase(dot);
     return result;
 }
 
@@ -2429,11 +2432,27 @@ int WINAPI WinMain(
         vegetation::enabled = false;
     }
 
+    unsigned int matchedVegetationTiles = 0;
     for (size_t i = 0; i < tiles.size(); ++i) {
         tiles[i].vegetationFilename =
             vegetation::filenameForTerrain(
                 tiles[i].filename
             );
+        if (!tiles[i].vegetationFilename.empty())
+            ++matchedVegetationTiles;
+    }
+
+    if (vegetation::enabled
+        && !tiles.empty()
+        && matchedVegetationTiles == 0) {
+        MessageBoxA(
+            windowHandle,
+            "Vegetation assets loaded, but no vegetation tiles matched "
+            "the terrain index.\nCheck terrain tile names and the packed "
+            "vegetation_index.txt.",
+            "Vegetation tile mapping",
+            MB_OK | MB_ICONWARNING
+        );
     }
 
     // Initialize shared building materials and optional tile mappings.

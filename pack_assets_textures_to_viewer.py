@@ -14,15 +14,15 @@ This is the viewer-specific final stage of the prototype pipeline:
    Historyviewer formats.
 
 The output contains the files required by Historyviewer:
-``assets.txt``, twelve TGA textures per asset, ``vegetation_index.txt``, and
-one VEG1 file per terrain tile. Land-cover JSON maps and generated terrain
-textures are copied alongside those files for inspection and for future
-terrain-material rendering.
+``assets.txt``, twelve TGA textures per asset, ``vegetation_index.txt``,
+``ground_materials.txt``, ``ground_index.txt``, and one VEG1/LCM1 file per
+terrain tile. The generated JSON and source PNG materials are also copied
+under ``landcover/`` and ``terrain_textures/`` for inspection.
 
-The current legacy viewer consumes the packed vegetation assets and VEG1
-placements. It does not yet read ``landcover/*.json`` or
-``terrain_textures/*.png``; those files are still exported so terrain
-material rendering can be added without regenerating land-cover placements.
+Historyviewer consumes the packed vegetation assets, VEG1 placements, ground
+material TGAs, and compact LCM1 maps from this one output folder. Terrain
+tile names are normalized to the prepared terrain files (for example,
+``tile_0001.trn``), even when the land-cover manifest stores only the stem.
 
 With --deform-terrain, this final stage also creates a separate deformed
 terrain folder from existing TRN1 terrain and ROAD1 road tiles. The original
@@ -188,6 +188,13 @@ def write_ground_map(path, data, material_ids):
         handle.write(struct.pack(f"<{len(values)}H", *values))
 
 
+def viewer_terrain_name(value):
+    """Return the terrain basename used by Historyviewer indexes."""
+    path = Path(value)
+    name = path.name
+    return name if path.suffix else name + ".trn"
+
+
 def read_vpl(path, asset_info):
     """Convert physical VPL1 placements to viewer-relative VEG1 scales."""
     with path.open("rb") as handle:
@@ -241,9 +248,8 @@ def main():
             "assets into Historyviewer VEG1/V4 files."
         ),
         epilog=(
-            "The legacy viewer renders the packed vegetation. Use --textures "
-            "to copy and validate terrain materials; the current viewer does "
-            "not render those PNGs yet."
+            "The legacy viewer renders packed vegetation and ground materials. "
+            "Use --textures to include terrain material TGAs and LCM1 maps."
         ),
     )
     parser.add_argument(
@@ -429,7 +435,7 @@ def main():
             output / "vegetation" / output_name,
             read_vpl(input_path, asset_info),
         )
-        terrain_name = Path(tile["terrain_filename"]).name
+        terrain_name = viewer_terrain_name(tile["terrain_filename"])
         tile_records.append((terrain_name, f"vegetation/{output_name}"))
         shutil.copy2(
             source / tile["landcover_filename"],

@@ -120,6 +120,10 @@ static std::string fileKey(const std::string& filename) {
             result[i] = (char)(result[i] - 'A' + 'a');
     }
 
+    std::string::size_type dot = result.find_last_of('.');
+    if (dot != std::string::npos)
+        result.erase(dot);
+
     return result;
 }
 
