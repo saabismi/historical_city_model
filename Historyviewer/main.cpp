@@ -243,10 +243,11 @@ struct ViewerSettings {
     int terrainDetail;
     int vegetationCards;
     int vegetationLodFloor;
+    int vegetationDensity;
 };
 
 ViewerSettings viewerSettings = {
-    1200, 1500, 1800, 96, 1, 3, 0
+    1200, 1500, 1800, 96, 1, 3, 0, 1
 };
 
 struct SettingsItem {
@@ -265,6 +266,7 @@ enum {
     SETTING_TERRAIN_DETAIL,
     SETTING_VEGETATION_CARDS,
     SETTING_VEGETATION_LOD,
+    SETTING_VEGETATION_DENSITY,
     SETTING_EXIT
 };
 
@@ -276,6 +278,7 @@ const SettingsItem settingsItems[] = {
     {"Terrain detail", SETTING_TERRAIN_DETAIL, 0, 3, 1},
     {"Vegetation cards", SETTING_VEGETATION_CARDS, 2, 4, 1},
     {"Vegetation LOD floor", SETTING_VEGETATION_LOD, 0, 2, 1},
+    {"Vegetation density (1/N)", SETTING_VEGETATION_DENSITY, 1, 16, 1},
     {"Exit to Windows", SETTING_EXIT, 0, 0, 0}
 };
 
@@ -1352,7 +1355,8 @@ void applyViewerSettings() {
     roads::setMaximumDistance(viewerSettings.viewDistance);
     vegetation::setRenderSettings(
         viewerSettings.vegetationLodFloor,
-        viewerSettings.vegetationCards
+        viewerSettings.vegetationCards,
+        viewerSettings.vegetationDensity
     );
 }
 
@@ -1365,6 +1369,7 @@ void setInitialViewerSettings(int preset) {
     viewerSettings.terrainDetail = lodBias;
     viewerSettings.vegetationCards = preset == 0 ? 2 : preset == 1 ? 3 : 4;
     viewerSettings.vegetationLodFloor = preset == 0 ? 1 : 0;
+    viewerSettings.vegetationDensity = preset == 0 ? 4 : preset == 1 ? 3 : 2;
 }
 
 double settingValue(int index) {
@@ -1376,6 +1381,7 @@ double settingValue(int index) {
     case SETTING_TERRAIN_DETAIL: return viewerSettings.terrainDetail;
     case SETTING_VEGETATION_CARDS: return viewerSettings.vegetationCards;
     case SETTING_VEGETATION_LOD: return viewerSettings.vegetationLodFloor;
+    case SETTING_VEGETATION_DENSITY: return viewerSettings.vegetationDensity;
     default: return 0;
     }
 }
@@ -1416,6 +1422,9 @@ void changeSetting(int direction) {
     case SETTING_VEGETATION_LOD:
         viewerSettings.vegetationLodFloor = (int)value;
         break;
+    case SETTING_VEGETATION_DENSITY:
+        viewerSettings.vegetationDensity = (int)value;
+        break;
     }
 
     applyViewerSettings();
@@ -1431,7 +1440,8 @@ void formatSettingValue(int index, char* output, size_t capacity) {
     if (settingsItems[index].kind == SETTING_CACHE
         || settingsItems[index].kind == SETTING_TERRAIN_DETAIL
         || settingsItems[index].kind == SETTING_VEGETATION_CARDS
-        || settingsItems[index].kind == SETTING_VEGETATION_LOD) {
+        || settingsItems[index].kind == SETTING_VEGETATION_LOD
+        || settingsItems[index].kind == SETTING_VEGETATION_DENSITY) {
         std::sprintf(output, "%d", (int)value);
     } else {
         std::sprintf(output, "%.0f m", value);

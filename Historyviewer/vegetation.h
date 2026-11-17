@@ -62,7 +62,12 @@ void setPreset(int preset);
 void setBillboardCount(int count);
 
 // Override preset detail without changing tile residency or tile readiness.
-void setRenderSettings(int minimumLod, int billboardCount);
+// densityDivisor renders approximately one of every N placements.
+void setRenderSettings(
+    int minimumLod,
+    int billboardCount,
+    int densityDivisor
+);
 
 // Begin one frame's vegetation collection.
 void beginFrame();

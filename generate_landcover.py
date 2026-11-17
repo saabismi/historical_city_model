@@ -21,9 +21,11 @@ Processing:
     - Only the parent process updates the resume manifest.
 
 Important:
-    Tree placement behavior is retained from the original generator:
-    one tree placement is emitted per accepted LiDAR return, not per
-    individually detected tree. CONFIG["tree_spacing"] remains unused.
+    One tree placement is emitted per accepted LiDAR return, not per
+    individually detected tree. Roads and buildings are excluded during
+    generation, including the configured ``vegetation_clearance`` around
+    their geometry. The viewer also has a runtime density setting for
+    reducing draw load without regenerating this output.
 
 Requirements:
     GDAL/OGR, rasterio, numpy, Shapely >= 2.0, laspy, and lazrs.
@@ -75,6 +77,8 @@ CONFIG = {
     "bush_spacing": 7.0,
     "rock_spacing": 8.0,
     "building_buffer": 3.0,
+    # Extra clearance applied around roads and buildings for all vegetation.
+    "vegetation_clearance": 2.0,
     # Exclusion radius = half the road surface width plus shoulder width.
     "road_classes": {
         12111: {"width": 13.0, "shoulder": 2.0},
@@ -583,7 +587,10 @@ def load_sources(mtk, buildings, roads):
 
         geometries, _ = read_geometries(path, "rakennus")
         exclusions.extend(
-            geometry.buffer(CONFIG["building_buffer"])
+            geometry.buffer(
+                CONFIG["building_buffer"]
+                + CONFIG["vegetation_clearance"]
+            )
             for geometry in geometries
         )
 
@@ -594,7 +601,10 @@ def load_sources(mtk, buildings, roads):
 
         geometries, classes = read_geometries(path, "tieviiva", "LUOKKA")
         exclusions.extend(
-            geometry.buffer(road_exclusion_radius(luokka))
+            geometry.buffer(
+                road_exclusion_radius(luokka)
+                + CONFIG["vegetation_clearance"]
+            )
             for geometry, luokka in zip(geometries, classes)
         )
 
@@ -1218,6 +1228,15 @@ def main():
     parser.add_argument("--buildings")
     parser.add_argument("--roads")
     parser.add_argument(
+        "--vegetation-clearance",
+        type=float,
+        default=CONFIG["vegetation_clearance"],
+        help=(
+            "Additional metres of no-vegetation clearance around roads and "
+            "buildings. Increase this to keep vegetation farther away."
+        ),
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=default_workers,
@@ -1233,6 +1252,9 @@ def main():
     )
     parser.add_argument("-o", "--output", required=True)
     args = parser.parse_args()
+    if args.vegetation_clearance < 0:
+        parser.error("--vegetation-clearance cannot be negative.")
+    CONFIG["vegetation_clearance"] = args.vegetation_clearance
 
     if args.workers < 1:
         parser.error("--workers must be at least 1")

@@ -73,6 +73,7 @@ static bool nearerPlant(
 
 static int minimumLOD = 0;          // Low preset can omit near detail.
 static int billboardCount = 3;      // Low uses 2, Medium 3, High 4.
+static int densityDivisor = 1;      // Render one of every N placements.
 
 bool enabled = true;
 unsigned long drawnPlants = 0;
@@ -504,9 +505,24 @@ void setBillboardCount(int count) {
     billboardCount = std::max(2, std::min(4, count));
 }
 
-void setRenderSettings(int lod, int cards) {
+void setRenderSettings(int lod, int cards, int density) {
     minimumLOD = std::max(0, std::min(2, lod));
     billboardCount = std::max(2, std::min(4, cards));
+    densityDivisor = std::max(1, std::min(16, density));
+}
+
+static unsigned int placementHash(const Plant& plant) {
+    unsigned int hash = 2166136261u;
+    const unsigned int values[] = {
+        plant.asset,
+        (unsigned int)std::floor(plant.east * 10.0f),
+        (unsigned int)std::floor(plant.south * 10.0f),
+    };
+    for (std::size_t i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+        hash ^= values[i];
+        hash *= 16777619u;
+    }
+    return hash;
 }
 
 // Clear frame data while retaining allocated capacity.
@@ -576,6 +592,9 @@ void collect(
 
         for (std::size_t j = 0; j < cell.plants.size(); ++j) {
             const Plant& plant = cell.plants[j];
+            if (densityDivisor > 1
+                && placementHash(plant) % densityDivisor != 0)
+                continue;
 
             const Asset& asset = assets[plant.asset];
             double x =
